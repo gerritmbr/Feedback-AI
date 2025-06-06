@@ -11,6 +11,7 @@ from prefect.blocks.system import Secret
 import networkx as nx
 from collections import Counter
 import re
+import csv
 
 # Configuration
 class PipelineConfig:
@@ -903,7 +904,7 @@ def create_prefect_artifacts(
     )
 
 
-
+# TBD - combine with create_prefect artifacts function and clean up.
 @task(name='store_flattening_artifacts', retries=1)
 def create_flattening_artifacts(
     flattening_results: FlatteningResults,
@@ -1185,7 +1186,13 @@ def create_flattening_artifacts(
         'qa_pairs_stored': len(qa_pairs),
         # 'insights_generated': len(final_results.insights)
     }
-
+@task(name="export-data-csv", retries=1)
+def export_qa_pairs_to_csv(filename: str, qa_pairs: List[QAPair]):
+    with open(filename, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(['question', 'answer', 'reason', 'transcript_id'])  # header
+        for qa in qa_pairs:
+            writer.writerow([qa.question, qa.answer, qa.reason, qa.transcript_id])
 
 # Main Pipeline Flow
 @flow(name="transcript-processing-pipeline", task_runner=ConcurrentTaskRunner())
@@ -1247,6 +1254,9 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
         # final_results=final_results
     )
 
+    # Step 7: Export qa_pairs_flattened to csv, for using in other scripts.
+    export_qa_pairs_to_csv('qa_pairs.csv', qa_pairs_flattened)
+
     logger.info("Pipeline completed successfully")
     # return final_results
     return qa_pairs_flattened_results
@@ -1261,7 +1271,7 @@ if __name__ == "__main__":
         
         # # Save results
         # TBD save other dataframes to json
-        
+
         # with open(f"analysis_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
         #     json.dump({
         #         'stats': results.stats,
