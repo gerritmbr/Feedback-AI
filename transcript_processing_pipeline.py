@@ -617,213 +617,213 @@ async def _flatten_group_with_tracking(standardized_question: str, group_pairs: 
         raise
 
 
-# Step 3: Statistical Analysis
-# needs to be rewritten -  TBD
-@task(name="perform_statistical_analysis", retries=1)
-def perform_statistical_analysis(qa_pairs: List[QAPair]) -> Dict[str, Any]:
-    """Perform statistical analysis on extracted Q&A data"""
-    logger = get_run_logger()
-    logger.info("Performing statistical analysis")
+# # Step 3: Statistical Analysis
+# # needs to be rewritten -  TBD
+# @task(name="perform_statistical_analysis", retries=1)
+# def perform_statistical_analysis(qa_pairs: List[QAPair]) -> Dict[str, Any]:
+#     """Perform statistical analysis on extracted Q&A data"""
+#     logger = get_run_logger()
+#     logger.info("Performing statistical analysis")
     
-    # Convert to DataFrame for analysis
-    data = []
-    for qa in qa_pairs:
-        data.append({
-            'transcript_id': qa.transcript_id,
-            'question': qa.question,
-            'answer': qa.answer,
-            'reason': qa.reason,
-            'question_length': len(qa.question), #remove
-            'answer_length': len(qa.answer),  #remove
-            'reason_length': len(qa.reason)  #remove
-        })
+#     # Convert to DataFrame for analysis
+#     data = []
+#     for qa in qa_pairs:
+#         data.append({
+#             'transcript_id': qa.transcript_id,
+#             'question': qa.question,
+#             'answer': qa.answer,
+#             'reason': qa.reason,
+#             'question_length': len(qa.question), #remove
+#             'answer_length': len(qa.answer),  #remove
+#             'reason_length': len(qa.reason)  #remove
+#         })
     
-    df = pd.DataFrame(data)
+#     df = pd.DataFrame(data)
     
-    stats = {
-        'total_qa_pairs': len(qa_pairs),
-        'unique_transcripts': df['transcript_id'].nunique(),
-        'avg_qa_pairs_per_transcript': len(qa_pairs) / df['transcript_id'].nunique(),
-        'question_stats': {
-            'avg_length': df['question_length'].mean(),
-            'median_length': df['question_length'].median(),
-            'std_length': df['question_length'].std()
-        },
-        'answer_stats': {
-            'avg_length': df['answer_length'].mean(),
-            'median_length': df['answer_length'].median(),
-            'std_length': df['answer_length'].std()
-        },
-        'most_common_question_patterns': _extract_question_patterns(df['question'].tolist()),
-        'answer_sentiment_distribution': _analyze_answer_sentiment(df['answer'].tolist())
-    }
+#     stats = {
+#         'total_qa_pairs': len(qa_pairs),
+#         'unique_transcripts': df['transcript_id'].nunique(),
+#         'avg_qa_pairs_per_transcript': len(qa_pairs) / df['transcript_id'].nunique(),
+#         'question_stats': {
+#             'avg_length': df['question_length'].mean(),
+#             'median_length': df['question_length'].median(),
+#             'std_length': df['question_length'].std()
+#         },
+#         'answer_stats': {
+#             'avg_length': df['answer_length'].mean(),
+#             'median_length': df['answer_length'].median(),
+#             'std_length': df['answer_length'].std()
+#         },
+#         'most_common_question_patterns': _extract_question_patterns(df['question'].tolist()),
+#         'answer_sentiment_distribution': _analyze_answer_sentiment(df['answer'].tolist())
+#     }
     
-    logger.info("Statistical analysis completed")
-    return stats
+#     logger.info("Statistical analysis completed")
+#     return stats
 
-def _extract_question_patterns(questions: List[str]) -> Dict[str, int]:
-    """Extract common question patterns"""
-    patterns = []
-    for q in questions:
-        # Simple pattern extraction based on question starters
-        q_lower = q.lower().strip()
-        if q_lower.startswith(('what', 'how', 'why', 'when', 'where', 'who')):
-            patterns.append(q_lower.split()[0])
-        elif '?' in q:
-            patterns.append('general_question')
-        else:
-            patterns.append('statement')
+# def _extract_question_patterns(questions: List[str]) -> Dict[str, int]:
+#     """Extract common question patterns"""
+#     patterns = []
+#     for q in questions:
+#         # Simple pattern extraction based on question starters
+#         q_lower = q.lower().strip()
+#         if q_lower.startswith(('what', 'how', 'why', 'when', 'where', 'who')):
+#             patterns.append(q_lower.split()[0])
+#         elif '?' in q:
+#             patterns.append('general_question')
+#         else:
+#             patterns.append('statement')
     
-    return dict(Counter(patterns).most_common(10))
+#     return dict(Counter(patterns).most_common(10))
 
-def _analyze_answer_sentiment(answers: List[str]) -> Dict[str, int]:
-    """Basic sentiment analysis of answers"""
-    positive_words = ['good', 'great', 'excellent', 'satisfied', 'happy', 'positive', 'yes']
-    negative_words = ['bad', 'poor', 'terrible', 'unsatisfied', 'unhappy', 'negative', 'no']
+# def _analyze_answer_sentiment(answers: List[str]) -> Dict[str, int]:
+#     """Basic sentiment analysis of answers"""
+#     positive_words = ['good', 'great', 'excellent', 'satisfied', 'happy', 'positive', 'yes']
+#     negative_words = ['bad', 'poor', 'terrible', 'unsatisfied', 'unhappy', 'negative', 'no']
     
-    sentiment_counts = {'positive': 0, 'negative': 0, 'neutral': 0}
+#     sentiment_counts = {'positive': 0, 'negative': 0, 'neutral': 0}
     
-    for answer in answers:
-        answer_lower = answer.lower()
-        pos_count = sum(1 for word in positive_words if word in answer_lower)
-        neg_count = sum(1 for word in negative_words if word in answer_lower)
+#     for answer in answers:
+#         answer_lower = answer.lower()
+#         pos_count = sum(1 for word in positive_words if word in answer_lower)
+#         neg_count = sum(1 for word in negative_words if word in answer_lower)
         
-        if pos_count > neg_count:
-            sentiment_counts['positive'] += 1
-        elif neg_count > pos_count:
-            sentiment_counts['negative'] += 1
-        else:
-            sentiment_counts['neutral'] += 1
+#         if pos_count > neg_count:
+#             sentiment_counts['positive'] += 1
+#         elif neg_count > pos_count:
+#             sentiment_counts['negative'] += 1
+#         else:
+#             sentiment_counts['neutral'] += 1
     
-    return sentiment_counts
+#     return sentiment_counts
 
-# Step 4: Connection Modeling
-# needs checks
-@task(name="model_connections", retries=1)
-def model_qa_connections(qa_pairs: List[QAPair]) -> Dict[str, Any]:
-    """Model connections between answers and responses within transcripts"""
-    logger = get_run_logger()
-    logger.info("Modeling Q&A connections")
+# # Step 4: Connection Modeling
+# # needs checks
+# @task(name="model_connections", retries=1)
+# def model_qa_connections(qa_pairs: List[QAPair]) -> Dict[str, Any]:
+#     """Model connections between answers and responses within transcripts"""
+#     logger = get_run_logger()
+#     logger.info("Modeling Q&A connections")
     
-    # Group by transcript
-    transcript_groups = {}
-    for qa in qa_pairs:
-        if qa.transcript_id not in transcript_groups:
-            transcript_groups[qa.transcript_id] = []
-        transcript_groups[qa.transcript_id].append(qa)
+#     # Group by transcript
+#     transcript_groups = {}
+#     for qa in qa_pairs:
+#         if qa.transcript_id not in transcript_groups:
+#             transcript_groups[qa.transcript_id] = []
+#         transcript_groups[qa.transcript_id].append(qa)
     
-    connection_data = {
-        'transcript_networks': {},
-        'global_patterns': {},
-        'correlation_matrix': {}
-    }
+#     connection_data = {
+#         'transcript_networks': {},
+#         'global_patterns': {},
+#         'correlation_matrix': {}
+#     }
     
-    # Analyze connections within each transcript
-    for transcript_id, qa_list in transcript_groups.items():
-        if len(qa_list) < 2:
-            continue
+#     # Analyze connections within each transcript
+#     for transcript_id, qa_list in transcript_groups.items():
+#         if len(qa_list) < 2:
+#             continue
         
-        # Create network graph for this transcript
-        G = nx.Graph()
+#         # Create network graph for this transcript
+#         G = nx.Graph()
         
-        # Add nodes (questions)
-        for i, qa in enumerate(qa_list):
-            G.add_node(i, question=qa.question, answer=qa.answer)
+#         # Add nodes (questions)
+#         for i, qa in enumerate(qa_list):
+#             G.add_node(i, question=qa.question, answer=qa.answer)
         
-        # Add edges based on answer similarity or sequential connection
-        for i in range(len(qa_list)):
-            for j in range(i+1, len(qa_list)):
-                # Simple connection based on shared keywords
-                similarity = _calculate_answer_similarity(qa_list[i].answer, qa_list[j].answer)
-                if similarity > 0.3:  # Threshold for connection
-                    G.add_edge(i, j, weight=similarity)
+#         # Add edges based on answer similarity or sequential connection
+#         for i in range(len(qa_list)):
+#             for j in range(i+1, len(qa_list)):
+#                 # Simple connection based on shared keywords
+#                 similarity = _calculate_answer_similarity(qa_list[i].answer, qa_list[j].answer)
+#                 if similarity > 0.3:  # Threshold for connection
+#                     G.add_edge(i, j, weight=similarity)
         
-        # Calculate network metrics
-        connection_data['transcript_networks'][transcript_id] = {
-            'node_count': G.number_of_nodes(),
-            'edge_count': G.number_of_edges(),
-            'density': nx.density(G) if G.number_of_nodes() > 1 else 0,
-            'clustering_coefficient': nx.average_clustering(G) if G.number_of_edges() > 0 else 0
-        }
+#         # Calculate network metrics
+#         connection_data['transcript_networks'][transcript_id] = {
+#             'node_count': G.number_of_nodes(),
+#             'edge_count': G.number_of_edges(),
+#             'density': nx.density(G) if G.number_of_nodes() > 1 else 0,
+#             'clustering_coefficient': nx.average_clustering(G) if G.number_of_edges() > 0 else 0
+#         }
     
-    # Calculate global patterns
-    all_answers = [qa.answer.lower() for qa in qa_pairs]
-    connection_data['global_patterns'] = {
-        'common_answer_themes': _extract_common_themes(all_answers),
-        'answer_length_correlation': _calculate_length_correlations(qa_pairs)
-    }
+#     # Calculate global patterns
+#     all_answers = [qa.answer.lower() for qa in qa_pairs]
+#     connection_data['global_patterns'] = {
+#         'common_answer_themes': _extract_common_themes(all_answers),
+#         'answer_length_correlation': _calculate_length_correlations(qa_pairs)
+#     }
     
-    logger.info("Connection modeling completed")
-    return connection_data
+#     logger.info("Connection modeling completed")
+#     return connection_data
 
-def _calculate_answer_similarity(answer1: str, answer2: str) -> float:
-    """Calculate simple similarity between two answers"""
-    words1 = set(answer1.lower().split())
-    words2 = set(answer2.lower().split())
+# def _calculate_answer_similarity(answer1: str, answer2: str) -> float:
+#     """Calculate simple similarity between two answers"""
+#     words1 = set(answer1.lower().split())
+#     words2 = set(answer2.lower().split())
     
-    if not words1 or not words2:
-        return 0.0
+#     if not words1 or not words2:
+#         return 0.0
     
-    intersection = words1.intersection(words2)
-    union = words1.union(words2)
+#     intersection = words1.intersection(words2)
+#     union = words1.union(words2)
     
-    return len(intersection) / len(union) if union else 0.0
+#     return len(intersection) / len(union) if union else 0.0
 
-def _extract_common_themes(answers: List[str]) -> Dict[str, int]:
-    """Extract common themes from answers"""
-    # Simple keyword-based theme extraction
-    all_words = []
-    for answer in answers:
-        words = [word.lower() for word in answer.split() if len(word) > 3]
-        all_words.extend(words)
+# def _extract_common_themes(answers: List[str]) -> Dict[str, int]:
+#     """Extract common themes from answers"""
+#     # Simple keyword-based theme extraction
+#     all_words = []
+#     for answer in answers:
+#         words = [word.lower() for word in answer.split() if len(word) > 3]
+#         all_words.extend(words)
     
-    return dict(Counter(all_words).most_common(20))
+#     return dict(Counter(all_words).most_common(20))
 
-def _calculate_length_correlations(qa_pairs: List[QAPair]) -> Dict[str, float]:
-    """Calculate correlations between question/answer/reason lengths"""
-    question_lengths = [len(qa.question) for qa in qa_pairs]
-    answer_lengths = [len(qa.answer) for qa in qa_pairs]
-    reason_lengths = [len(qa.reason) for qa in qa_pairs]
+# def _calculate_length_correlations(qa_pairs: List[QAPair]) -> Dict[str, float]:
+#     """Calculate correlations between question/answer/reason lengths"""
+#     question_lengths = [len(qa.question) for qa in qa_pairs]
+#     answer_lengths = [len(qa.answer) for qa in qa_pairs]
+#     reason_lengths = [len(qa.reason) for qa in qa_pairs]
     
 
-    corr_qa = np.corrcoef(question_lengths, answer_lengths)[0, 1]
-    return {
-        'question_answer_corr': corr_qa if not np.isnan(corr_qa) else 0.0,
-        'question_answer_corr': np.corrcoef(question_lengths, answer_lengths)[0, 1],
-        'answer_reason_corr': np.corrcoef(answer_lengths, reason_lengths)[0, 1],
-        'question_reason_corr': np.corrcoef(question_lengths, reason_lengths)[0, 1]
-    }
+#     corr_qa = np.corrcoef(question_lengths, answer_lengths)[0, 1]
+#     return {
+#         'question_answer_corr': corr_qa if not np.isnan(corr_qa) else 0.0,
+#         'question_answer_corr': np.corrcoef(question_lengths, answer_lengths)[0, 1],
+#         'answer_reason_corr': np.corrcoef(answer_lengths, reason_lengths)[0, 1],
+#         'question_reason_corr': np.corrcoef(question_lengths, reason_lengths)[0, 1]
+#     }
 
-# Step 5: Results Compilation
-@task(name="compile_results", retries=1)
-def compile_final_results(stats: Dict[str, Any], connections: Dict[str, Any]) -> AnalysisResults:
-    """Compile final analysis results"""
-    logger = get_run_logger()
-    logger.info("Compiling final results")
+# # Step 5: Results Compilation
+# @task(name="compile_results", retries=1)
+# def compile_final_results(stats: Dict[str, Any], connections: Dict[str, Any]) -> AnalysisResults:
+#     """Compile final analysis results"""
+#     logger = get_run_logger()
+#     logger.info("Compiling final results")
     
-    # Generate insights based on analysis
-    insights = []
+#     # Generate insights based on analysis
+#     insights = []
     
-    # Statistical insights
-    if stats['avg_qa_pairs_per_transcript'] > 5:
-        insights.append("High engagement: Transcripts contain multiple question-answer exchanges")
+#     # Statistical insights
+#     if stats['avg_qa_pairs_per_transcript'] > 5:
+#         insights.append("High engagement: Transcripts contain multiple question-answer exchanges")
     
-    if stats['answer_sentiment_distribution']['positive'] > stats['answer_sentiment_distribution']['negative']:
-        insights.append("Overall positive sentiment in responses")
+#     if stats['answer_sentiment_distribution']['positive'] > stats['answer_sentiment_distribution']['negative']:
+#         insights.append("Overall positive sentiment in responses")
     
-    # Connection insights
-    avg_density = np.mean([net['density'] for net in connections['transcript_networks'].values()])
-    if avg_density > 0.5:
-        insights.append("Strong interconnections between answers within transcripts")
+#     # Connection insights
+#     avg_density = np.mean([net['density'] for net in connections['transcript_networks'].values()])
+#     if avg_density > 0.5:
+#         insights.append("Strong interconnections between answers within transcripts")
     
-    results = AnalysisResults(
-        stats=stats,
-        connections=connections,
-        insights=insights
-    )
+#     results = AnalysisResults(
+#         stats=stats,
+#         connections=connections,
+#         insights=insights
+#     )
     
-    logger.info(f"Analysis completed with {len(insights)} key insights")
-    return results
+#     logger.info(f"Analysis completed with {len(insights)} key insights")
+#     return results
 
 # Store dataframes and variables for later human evaluation
 # Store dataframes and variables for later human evaluation
@@ -833,9 +833,9 @@ def create_prefect_artifacts(
     cleaned_transcripts: List[TranscriptData], 
     qa_pairs: List[QAPair],
     qa_pairs_flattened: List[QAPair],
-    statistical_results: Dict[str, Any],
-    connection_results: Dict[str, Any],
-    final_results: AnalysisResults
+    # statistical_results: Dict[str, Any],
+    # connection_results: Dict[str, Any],
+    # final_results: AnalysisResults
 ):
     """Store all critical pipeline elements as Prefect artifacts for later evaluation"""
     logger = get_run_logger()
@@ -911,9 +911,9 @@ def create_flattening_artifacts(
     cleaned_transcripts: List[TranscriptData], 
     qa_pairs: List[QAPair],
     qa_pairs_flattened: List[QAPair],
-    statistical_results: Dict[str, Any],
-    connection_results: Dict[str, Any],
-    final_results: AnalysisResults
+    # statistical_results: Dict[str, Any],
+    # connection_results: Dict[str, Any],
+    # final_results: AnalysisResults
 ):
 
     logger = get_run_logger()
@@ -996,154 +996,154 @@ def create_flattening_artifacts(
     )
 
 
-    # 3. Store Statistical Results Summary
-    stats_markdown = f"""
-    # Statistical Analysis Results
-    *Generated at: {current_time}*
+    # # 3. Store Statistical Results Summary
+    # stats_markdown = f"""
+    # # Statistical Analysis Results
+    # *Generated at: {current_time}*
 
-    ## Overview
-    - **Total Q&A Pairs**: {statistical_results['total_qa_pairs']:,}
-    - **Unique Transcripts**: {statistical_results['unique_transcripts']:,}
-    - **Average Q&A Pairs per Transcript**: {statistical_results['avg_qa_pairs_per_transcript']:.2f}
+    # ## Overview
+    # - **Total Q&A Pairs**: {statistical_results['total_qa_pairs']:,}
+    # - **Unique Transcripts**: {statistical_results['unique_transcripts']:,}
+    # - **Average Q&A Pairs per Transcript**: {statistical_results['avg_qa_pairs_per_transcript']:.2f}
 
-    ## Question Statistics
-    - **Average Length**: {statistical_results['question_stats']['avg_length']:.1f} characters
-    - **Median Length**: {statistical_results['question_stats']['median_length']:.1f} characters
-    - **Standard Deviation**: {statistical_results['question_stats']['std_length']:.1f} characters
+    # ## Question Statistics
+    # - **Average Length**: {statistical_results['question_stats']['avg_length']:.1f} characters
+    # - **Median Length**: {statistical_results['question_stats']['median_length']:.1f} characters
+    # - **Standard Deviation**: {statistical_results['question_stats']['std_length']:.1f} characters
 
-    ## Answer Statistics
-    - **Average Length**: {statistical_results['answer_stats']['avg_length']:.1f} characters
-    - **Median Length**: {statistical_results['answer_stats']['median_length']:.1f} characters
-    - **Standard Deviation**: {statistical_results['answer_stats']['std_length']:.1f} characters
+    # ## Answer Statistics
+    # - **Average Length**: {statistical_results['answer_stats']['avg_length']:.1f} characters
+    # - **Median Length**: {statistical_results['answer_stats']['median_length']:.1f} characters
+    # - **Standard Deviation**: {statistical_results['answer_stats']['std_length']:.1f} characters
 
-    ## Question Patterns
-    """
+    # ## Question Patterns
+    # """
     
-    for pattern, count in statistical_results['most_common_question_patterns'].items():
-        stats_markdown += f"- **{pattern}**: {count} occurrences\n"
+    # for pattern, count in statistical_results['most_common_question_patterns'].items():
+    #     stats_markdown += f"- **{pattern}**: {count} occurrences\n"
     
-    stats_markdown += "\n## Answer Sentiment Distribution\n"
-    for sentiment, count in statistical_results['answer_sentiment_distribution'].items():
-        stats_markdown += f"- **{sentiment.capitalize()}**: {count} answers\n"
+    # stats_markdown += "\n## Answer Sentiment Distribution\n"
+    # for sentiment, count in statistical_results['answer_sentiment_distribution'].items():
+    #     stats_markdown += f"- **{sentiment.capitalize()}**: {count} answers\n"
     
-    create_markdown_artifact(
-        key="statistical-analysis",  # Changed from statistical_analysis
-        markdown=stats_markdown,
-        description="Complete statistical analysis of Q&A pairs"
-    )
+    # create_markdown_artifact(
+    #     key="statistical-analysis",  # Changed from statistical_analysis
+    #     markdown=stats_markdown,
+    #     description="Complete statistical analysis of Q&A pairs"
+    # )
     
-    # 4. Store Connection Analysis Results
-    connection_markdown = f"""
-    # Connection Analysis Results
-    *Generated at: {current_time}*
+    # # 4. Store Connection Analysis Results
+    # connection_markdown = f"""
+    # # Connection Analysis Results
+    # *Generated at: {current_time}*
 
-    ## Transcript Network Analysis
-    """
+    # ## Transcript Network Analysis
+    # """
     
-    if connection_results['transcript_networks']:
-        total_networks = len(connection_results['transcript_networks'])
-        avg_density = sum(net['density'] for net in connection_results['transcript_networks'].values()) / total_networks
+    # if connection_results['transcript_networks']:
+    #     total_networks = len(connection_results['transcript_networks'])
+    #     avg_density = sum(net['density'] for net in connection_results['transcript_networks'].values()) / total_networks
         
-        connection_markdown += f"""
-    - **Total Transcript Networks**: {total_networks}
-    - **Average Network Density**: {avg_density:.3f}
+    #     connection_markdown += f"""
+    # - **Total Transcript Networks**: {total_networks}
+    # - **Average Network Density**: {avg_density:.3f}
 
-    ### Network Details (First 10 Transcripts)
-    """
+    # ### Network Details (First 10 Transcripts)
+    # """
         
-        for i, (transcript_id, network_data) in enumerate(list(connection_results['transcript_networks'].items())[:10]):
-            connection_markdown += f"""
-    #### Transcript {transcript_id}
-    - Nodes: {network_data['node_count']}
-    - Edges: {network_data['edge_count']}
-    - Density: {network_data['density']:.3f}
-    - Clustering Coefficient: {network_data['clustering_coefficient']:.3f}
-    """
+    #     for i, (transcript_id, network_data) in enumerate(list(connection_results['transcript_networks'].items())[:10]):
+    #         connection_markdown += f"""
+    # #### Transcript {transcript_id}
+    # - Nodes: {network_data['node_count']}
+    # - Edges: {network_data['edge_count']}
+    # - Density: {network_data['density']:.3f}
+    # - Clustering Coefficient: {network_data['clustering_coefficient']:.3f}
+    # """
     
-    connection_markdown += "\n## Global Patterns\n"
+    # connection_markdown += "\n## Global Patterns\n"
     
-    if 'common_answer_themes' in connection_results['global_patterns']:
-        connection_markdown += "### Common Answer Themes\n"
-        for theme, count in list(connection_results['global_patterns']['common_answer_themes'].items())[:10]:
-            connection_markdown += f"- **{theme}**: {count} occurrences\n"
+    # if 'common_answer_themes' in connection_results['global_patterns']:
+    #     connection_markdown += "### Common Answer Themes\n"
+    #     for theme, count in list(connection_results['global_patterns']['common_answer_themes'].items())[:10]:
+    #         connection_markdown += f"- **{theme}**: {count} occurrences\n"
     
-    if 'answer_length_correlation' in connection_results['global_patterns']:
-        correlations = connection_results['global_patterns']['answer_length_correlation']
-        connection_markdown += f"""
-    ### Length Correlations
-    - **Question ↔ Answer**: {correlations.get('question_answer_corr', 0):.3f}
-    - **Answer ↔ Reason**: {correlations.get('answer_reason_corr', 0):.3f}
-    - **Question ↔ Reason**: {correlations.get('question_reason_corr', 0):.3f}
-    """
+    # if 'answer_length_correlation' in connection_results['global_patterns']:
+    #     correlations = connection_results['global_patterns']['answer_length_correlation']
+    #     connection_markdown += f"""
+    # ### Length Correlations
+    # - **Question ↔ Answer**: {correlations.get('question_answer_corr', 0):.3f}
+    # - **Answer ↔ Reason**: {correlations.get('answer_reason_corr', 0):.3f}
+    # - **Question ↔ Reason**: {correlations.get('question_reason_corr', 0):.3f}
+    # """
     
-    create_markdown_artifact(
-        key="connection-analysis",  # Changed from connection_analysis
-        markdown=connection_markdown,
-        description="Analysis of connections and patterns in Q&A data"
-    )
+    # create_markdown_artifact(
+    #     key="connection-analysis",  # Changed from connection_analysis
+    #     markdown=connection_markdown,
+    #     description="Analysis of connections and patterns in Q&A data"
+    # )
     
-    # 5. Store Final Results and Insights
-    insights_markdown = f"""
-    # Final Analysis Results & Insights
-    *Generated at: {current_time}*
+    #     # 5. Store Final Results and Insights
+    #     insights_markdown = f"""
+    #     # Final Analysis Results & Insights
+    #     *Generated at: {current_time}*
 
-    ## Key Insights
-    """
-    
-    for i, insight in enumerate(final_results.insights, 1):
-        insights_markdown += f"{i}. {insight}\n"
-    
-    insights_markdown += f"""
+    #     ## Key Insights
+    #     """
+        
+    #     for i, insight in enumerate(final_results.insights, 1):
+    #         insights_markdown += f"{i}. {insight}\n"
+        
+    #     insights_markdown += f"""
 
-    ## Summary Statistics
-    - **Processing Date**: {current_time}
-    - **Total Transcripts Processed**: {len(raw_transcripts)}
-    - **Total Q&A Pairs Extracted**: {len(qa_pairs)}
-    - **Analysis Insights Generated**: {len(final_results.insights)}
+    #     ## Summary Statistics
+    #     - **Processing Date**: {current_time}
+    #     - **Total Transcripts Processed**: {len(raw_transcripts)}
+    #     - **Total Q&A Pairs Extracted**: {len(qa_pairs)}
+    #     - **Analysis Insights Generated**: {len(final_results.insights)}
 
-    ## Data Quality Metrics
-    - **Transcripts Successfully Cleaned**: {len(cleaned_transcripts)} / {len(raw_transcripts)} ({len(cleaned_transcripts)/len(raw_transcripts)*100:.1f}%)
-    - **Average Content Reduction**: {(1 - sum(len(t.content) for t in cleaned_transcripts) / sum(len(t.content) for t in raw_transcripts)) * 100:.1f}%
-    """
+    #     ## Data Quality Metrics
+    #     - **Transcripts Successfully Cleaned**: {len(cleaned_transcripts)} / {len(raw_transcripts)} ({len(cleaned_transcripts)/len(raw_transcripts)*100:.1f}%)
+    #     - **Average Content Reduction**: {(1 - sum(len(t.content) for t in cleaned_transcripts) / sum(len(t.content) for t in raw_transcripts)) * 100:.1f}%
+    #     """
     
-    create_markdown_artifact(
-        key="final-insights",  # Changed from final_insights
-        markdown=insights_markdown,
-        description="Final analysis results and key insights"
-    )
+    # create_markdown_artifact(
+    #     key="final-insights",  # Changed from final_insights
+    #     markdown=insights_markdown,
+    #     description="Final analysis results and key insights"
+    # )
     
-    # 6. Store Raw Data Counts for Verification
-    verification_data = [{
-        'metric': 'Raw Transcripts Loaded',
-        'count': len(raw_transcripts),
-        'details': f"From input file processing"
-    }, {
-        'metric': 'Cleaned Transcripts',
-        'count': len(cleaned_transcripts),
-        'details': f"After preprocessing and validation"
-    }, {
-        'metric': 'Total Q&A Pairs Extracted',
-        'count': len(qa_pairs),
-        'details': f"From LLM processing"
-    }, {
-        'metric': 'Unique Transcript IDs in Q&A',
-        'count': len(set(qa.transcript_id for qa in qa_pairs)),
-        'details': f"Transcripts that generated Q&A pairs"
-    }, {
-        'metric': 'Statistical Analysis Patterns',
-        'count': len(statistical_results.get('most_common_question_patterns', {})),
-        'details': f"Question patterns identified"
-    }, {
-        'metric': 'Network Connections Analyzed',
-        'count': len(connection_results.get('transcript_networks', {})),
-        'details': f"Transcript networks created"
-    }]
+    #     # 6. Store Raw Data Counts for Verification
+    #     verification_data = [{
+    #         'metric': 'Raw Transcripts Loaded',
+    #         'count': len(raw_transcripts),
+    #         'details': f"From input file processing"
+    #     }, {
+    #         'metric': 'Cleaned Transcripts',
+    #         'count': len(cleaned_transcripts),
+    #         'details': f"After preprocessing and validation"
+    #     }, {
+    #         'metric': 'Total Q&A Pairs Extracted',
+    #         'count': len(qa_pairs),
+    #         'details': f"From LLM processing"
+    #     }, {
+    #         'metric': 'Unique Transcript IDs in Q&A',
+    #         'count': len(set(qa.transcript_id for qa in qa_pairs)),
+    #         'details': f"Transcripts that generated Q&A pairs"
+    #     }, {
+    #         'metric': 'Statistical Analysis Patterns',
+    #         'count': len(statistical_results.get('most_common_question_patterns', {})),
+    #         'details': f"Question patterns identified"
+    #     }, {
+    #         'metric': 'Network Connections Analyzed',
+    #         'count': len(connection_results.get('transcript_networks', {})),
+    #         'details': f"Transcript networks created"
+    #     }]
     
-    create_table_artifact(
-        key="verification-metrics",  # Changed from verification_metrics
-        table=verification_data,
-        description="Verification metrics for pipeline data processing"
-    )
+    # create_table_artifact(
+    #     key="verification-metrics",  # Changed from verification_metrics
+    #     table=verification_data,
+    #     description="Verification metrics for pipeline data processing"
+    # )
     
     # 7. Store Complete Data Export (JSON format for programmatic access)
     complete_export = {
@@ -1163,11 +1163,11 @@ def create_flattening_artifacts(
             'sample_questions': [qa.question for qa in qa_pairs[:5]],
             'transcripts_with_qa': list(set(qa.transcript_id for qa in qa_pairs))
         },
-        'analysis_summary': {
-            'statistical_results': statistical_results,
-            'connection_results': connection_results,
-            'final_insights': final_results.insights
-        }
+        # 'analysis_summary': {
+        #     'statistical_results': statistical_results,
+        #     'connection_results': connection_results,
+        #     'final_insights': final_results.insights
+        # }
     }
     
     create_markdown_artifact(
@@ -1183,7 +1183,7 @@ def create_flattening_artifacts(
         'artifacts_created': 7,
         'transcripts_stored': len(raw_transcripts),
         'qa_pairs_stored': len(qa_pairs),
-        'insights_generated': len(final_results.insights)
+        # 'insights_generated': len(final_results.insights)
     }
 
 
@@ -1215,14 +1215,15 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
     # Step 2.5: clean up and flatten the QA pairs, so that the same answers have the same wording (allow easier statistical analysis)
     qa_pairs_flattened_results = await flatten_qa_pairs_with_tracking(qa_pairs_raw)
     qa_pairs_flattened = qa_pairs_flattened_results.get_flattened_pairs()
-    # Step 3: Statistical analysis
-    statistical_results = perform_statistical_analysis(qa_pairs_flattened)
     
-    # Step 4: Connection modeling
-    connection_results = model_qa_connections(qa_pairs_flattened)
+    # # Step 3: Statistical analysis
+    # statistical_results = perform_statistical_analysis(qa_pairs_flattened)
     
-    # Step 5: Compile final results
-    final_results = compile_final_results(statistical_results, connection_results)
+    # # Step 4: Connection modeling
+    # connection_results = model_qa_connections(qa_pairs_flattened)
+    
+    # # Step 5: Compile final results
+    # final_results = compile_final_results(statistical_results, connection_results)
    
   # Step 6: Store artifacts for evaluation
     create_prefect_artifacts(
@@ -1230,9 +1231,9 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
         cleaned_transcripts=cleaned_transcripts,
         qa_pairs=qa_pairs_raw,  # Original pairs
         qa_pairs_flattened=qa_pairs_flattened,  # Flattened pairs
-        statistical_results=statistical_results,
-        connection_results=connection_results,
-        final_results=final_results
+        # statistical_results=statistical_results,
+        # connection_results=connection_results,
+        # final_results=final_results
     )
 
     create_flattening_artifacts(
@@ -1241,13 +1242,14 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
         cleaned_transcripts=cleaned_transcripts,
         qa_pairs=qa_pairs_raw,  # Original pairs
         qa_pairs_flattened=qa_pairs_flattened,  # Flattened pairs
-        statistical_results=statistical_results,
-        connection_results=connection_results,
-        final_results=final_results
+        # statistical_results=statistical_results,
+        # connection_results=connection_results,
+        # final_results=final_results
     )
 
     logger.info("Pipeline completed successfully")
-    return final_results
+    # return final_results
+    return qa_pairs_flattened_results
 
 # Deployment and Scheduling
 if __name__ == "__main__":
@@ -1257,21 +1259,22 @@ if __name__ == "__main__":
     async def run_pipeline():
         results = await transcript_processing_pipeline("mock_feedback.csv")
         
-        # Save results
-        with open(f"analysis_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
-            json.dump({
-                'stats': results.stats,
-                'connections': results.connections,
-                'insights': results.insights,
-                'generated_at': datetime.now().isoformat()
-            }, f, indent=2, default=str)
+        # # Save results
+        # TBD save other dataframes to json
         
-        #TBD save other dataframes to json
+        # with open(f"analysis_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
+        #     json.dump({
+        #         'stats': results.stats,
+        #         'connections': results.connections,
+        #         'insights': results.insights,
+        #         'generated_at': datetime.now().isoformat()
+        #     }, f, indent=2, default=str)
+        
         
         print("Pipeline completed successfully!")
-        print(f"Generated {len(results.insights)} insights:")
-        for insight in results.insights:
-            print(f"- {insight}")
+        # print(f"Generated {len(results.insights)} insights:")
+        # for insight in results.insights:
+        #     print(f"- {insight}")
     
     # Run the pipeline
     asyncio.run(run_pipeline())
