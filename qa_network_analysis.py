@@ -203,9 +203,14 @@ def create_network_visualization_task(qa_nodes: pd.DataFrame, qa_edges: pd.DataF
             multiplicity=row['edge_multiplicity']
         )
     
-    # Calculate layout
-    pos = nx.spring_layout(G, k=3, iterations=50)
-    
+    # TBD - make algorithm selection an input parameter
+    # Calculate layout 
+    # Fruchterman Rheingold
+    # pos = nx.spring_layout(G, k=3, iterations=50)
+
+    # Force Atlas 2
+    pos = nx.forceatlas2_layout(G)
+
     # Create edge traces
     edge_traces = []
     edge_colors = {
@@ -344,67 +349,10 @@ def export_for_gephi_task(
     gephi_nodes.to_csv(nodes_path, index=False, encoding='utf-8')
     gephi_edges.to_csv(edges_path, index=False, encoding='utf-8')
     
-    # Create import instructions
-    instructions_path = os.path.join(output_dir, "gephi_import_instructions.md")
-    instructions = f"""
-        # Gephi Import Instructions
-
-        ## Files Created:
-        - **qa_nodes_gephi.csv**: Node data for import
-        - **qa_edges_gephi.csv**: Edge data for import
-
-        ## How to Import into Gephi:
-
-        ### Step 1: Import Nodes
-        1. Open Gephi
-        2. Go to **File → Import Spreadsheet**
-        3. Select `qa_nodes_gephi.csv`
-        4. Choose **"Nodes table"** as import type
-        5. Make sure **"Id"** column is set as node identifier
-        6. Click **"Next"** and then **"Finish"**
-
-        ### Step 2: Import Edges
-        1. Go to **File → Import Spreadsheet** again
-        2. Select `qa_edges_gephi.csv`
-        3. Choose **"Edges table"** as import type
-        4. Make sure **"Source"** and **"Target"** columns are properly mapped
-        5. Set **"Weight"** column as edge weight if desired
-        6. Click **"Next"** and then **"Finish"**
-
-        ## Recommended Gephi Settings:
-
-        ### Layout Algorithms:
-        - **ForceAtlas 2**: Good for general network visualization
-        - **Fruchterman Reingold**: Classic force-directed layout
-        - **Yifan Hu**: Good for larger networks
-
-        ### Node Styling:
-        - **Size**: Based on `node_multiplicity` column
-        - **Color**: Based on `node_type` column (question/answer/reason)
-
-        ### Edge Styling:
-        - **Thickness**: Based on `Weight` (edge multiplicity)
-        - **Color**: Based on `edge_type` column
-
-        ### Useful Filters:
-        - Filter by `node_type` to show only questions, answers, or reasons
-        - Filter by `edge_type` to show specific relationship types
-        - Filter by `transcript_id` to focus on specific transcripts
-
-        ## Network Statistics:
-        - Total Nodes: {len(gephi_nodes)}
-        - Total Edges: {len(gephi_edges)}
-        - Node Types: {gephi_nodes['node_type'].value_counts().to_dict()}
-        - Edge Types: {gephi_edges['edge_type'].value_counts().to_dict()}
-        """
-    
-    with open(instructions_path, 'w', encoding='utf-8') as f:
-        f.write(instructions)
     
     return {
         "nodes_csv_path": nodes_path,
         "edges_csv_path": edges_path,
-        "instructions_path": instructions_path,
         "node_count": len(gephi_nodes),
         "edge_count": len(gephi_edges)
     }
@@ -417,7 +365,9 @@ def save_qa_network_artifacts_task(
     visualization: go.Figure
 ) -> Dict[str, str]:
     """Save QA network data and visualization as Prefect artifacts."""
-    
+    import tempfile
+    import os
+    from prefect.artifacts import create_link_artifact
     # Save nodes table
     nodes_artifact_id = create_table_artifact(
         key="qa-nodes-table",
@@ -432,6 +382,81 @@ def save_qa_network_artifacts_task(
         description="QA Network Edges - Contains all connections between nodes with relationship types"
     )
     
+    # Save visualization as HTML artifact
+    visualization_artifact_id = None
+    try:
+        # Create temporary HTML file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as temp_file:
+            # Generate HTML content
+            html_content = visualization.to_html(
+                include_plotlyjs=True,  # Include Plotly.js for standalone file
+                div_id="qa-network-graph",
+                config={'displayModeBar': True, 'responsive': True}
+            )
+            temp_file.write(html_content)
+            temp_html_path = temp_file.name
+        
+        # Read the HTML content
+        with open(temp_html_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        # Create HTML artifact using markdown (with HTML content)
+        visualization_artifact_id = create_markdown_artifact(
+            key="qa-network-visualization", 
+            markdown=f"""# QA Network Interactive Visualization
+
+        <div style="width: 100%; height: 600px; border: 1px solid #ddd; border-radius: 4px; overflow: hidden;">
+
+        {html_content}
+
+        </div>
+
+        ## How to Use This Visualization:
+        - **Zoom**: Use mouse wheel or zoom controls
+        - **Pan**: Click and drag to move around
+        - **Hover**: Hover over nodes and edges for details
+        - **Legend**: Click legend items to show/hide elements
+        - **Reset**: Double-click to reset zoom
+
+        ## Node Information:
+        - **Blue nodes**: Questions
+        - **Green nodes**: Answers  
+        - **Red nodes**: Reasons
+        - **Node size**: Proportional to multiplicity (how often it appears)
+
+        ## Edge Information:
+        - **Blue edges**: Question → Answer connections
+        - **Green edges**: Answer → Reason connections
+        - **Orange edges**: Same transcript answer connections
+        - **Purple edges**: Same transcript reason connections
+        """,
+            description="Interactive QA Network Graph - Hover over nodes for details, use controls to zoom/pan"
+        )
+        
+        # Clean up temporary file
+        os.unlink(temp_html_path)
+        
+    except Exception as e:
+        print(f"Warning: Could not create visualization artifact: {e}")
+    
+    # Also create a downloadable HTML file artifact
+    html_file_artifact_id = None
+    try:
+        # Save as a file that can be downloaded
+        html_filename = "qa_network_interactive.html"
+        visualization.write_html(html_filename)
+        
+        # Create link artifact pointing to the file
+        html_file_artifact_id = create_link_artifact(
+            key="qa-network-html-download",
+            link=f"./{html_filename}",
+            description=f"Downloadable HTML file: {html_filename} - Open in browser for full interactive experience"
+        )
+        
+    except Exception as e:
+        print(f"Warning: Could not create HTML file artifact: {e}")
+    
+
     # Create summary statistics
     summary_stats = f"""
         # QA Network Analysis Summary
@@ -454,6 +479,12 @@ def save_qa_network_artifacts_task(
 
         ## Transcript Coverage
         - **Unique Transcripts in Nodes**: {qa_nodes['transcript_id'].str.split('|').explode().nunique()}
+
+
+        ## Visualization Files Created:
+        - Interactive HTML visualization (embedded above)
+        - Downloadable HTML file: `qa_network_interactive.html`
+        - CSV files for Gephi import (if enabled)
             """
     
     summary_artifact_id = create_markdown_artifact(
@@ -468,7 +499,9 @@ def save_qa_network_artifacts_task(
     return {
         "nodes_artifact_id": nodes_artifact_id,
         "edges_artifact_id": edges_artifact_id,
-        "summary_artifact_id": summary_artifact_id
+        "summary_artifact_id": summary_artifact_id,
+        "visualization_artifact_id": visualization_artifact_id,
+        "html_file_artifact_id": html_file_artifact_id
     }
 
 
@@ -481,9 +514,12 @@ def qa_network_pipeline(qa_pairs: List[QAPair], export_gephi: bool = True, outpu
     
     # Create visualization
     visualization = create_network_visualization_task(qa_nodes, qa_edges)
-    
+
+
     # Save artifacts
     artifact_ids = save_qa_network_artifacts_task(qa_nodes, qa_edges, visualization)
+
+
     
     # Export for Gephi if requested
     gephi_export_info = None
@@ -499,24 +535,16 @@ def qa_network_pipeline(qa_pairs: List[QAPair], export_gephi: bool = True, outpu
     }
 
 
-# # Example usage and testing
-# def create_sample_data() -> List[QAPair]:
-#     """Create sample QA pairs for testing."""
-#     return [
-#         QAPair("What is AI?", "Artificial Intelligence", "It's a broad field", "1"),
-#         QAPair("What is ML?", "Machine Learning", "It's a subset of AI", "1"),
-#         QAPair("What is AI?", "Artificial Intelligence", "It enables machines to think", "2"),
-#         QAPair("How does ML work?", "Through algorithms", "It learns from data", "2"),
-#         QAPair("What is deep learning?", "Neural networks with many layers", "It's a subset of AI", "3"),
-#     ]
-
-
 if __name__ == "__main__":
     # Example usage
     # sample_qa_pairs = create_sample_data()
     processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs.csv')
     result = qa_network_pipeline(processed_qa_pairs, export_gephi=True, output_dir="my_gephi_files")
 
+    # All artifacts are automatically created
+    print("Created artifacts:")
+    for key, artifact_id in result["artifact_ids"].items():
+        print(f"  {key}: {artifact_id}")
 
     
     print("Nodes DataFrame:")
@@ -529,5 +557,4 @@ if __name__ == "__main__":
         print(f"\nGephi Export Info:")
         print(f"Nodes CSV: {result['gephi_export']['nodes_csv_path']}")
         print(f"Edges CSV: {result['gephi_export']['edges_csv_path']}")
-        print(f"Instructions: {result['gephi_export']['instructions_path']}")
         print(f"Exported {result['gephi_export']['node_count']} nodes and {result['gephi_export']['edge_count']} edges")
