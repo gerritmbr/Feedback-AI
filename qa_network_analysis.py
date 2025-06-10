@@ -443,7 +443,8 @@ def save_qa_network_artifacts_task(
     html_file_artifact_id = None
     try:
         # Save as a file that can be downloaded
-        html_filename = "qa_network_interactive.html"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        html_filename = f"qa_network_interactive_{timestamp}.html"
         visualization.write_html(html_filename)
         
         # Create link artifact pointing to the file
@@ -483,7 +484,7 @@ def save_qa_network_artifacts_task(
 
         ## Visualization Files Created:
         - Interactive HTML visualization (embedded above)
-        - Downloadable HTML file: `qa_network_interactive.html`
+        - Downloadable HTML file: `qa_network_interactive{timestamp}.html`
         - CSV files for Gephi import (if enabled)
             """
     
