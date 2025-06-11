@@ -1,6 +1,7 @@
 import pandas as pd
 from typing import List, Dict, Tuple, Set
 from dataclasses import dataclass
+from datetime import datetime
 from collections import defaultdict
 import hashlib
 import json
@@ -343,8 +344,9 @@ def export_for_gephi_task(
     gephi_edges = gephi_edges[['Source', 'Target', 'Weight', 'edge_type', 'edge_multiplicity']]
     
     # Export to CSV
-    nodes_path = os.path.join(output_dir, "qa_nodes_gephi.csv")
-    edges_path = os.path.join(output_dir, "qa_edges_gephi.csv")
+    current_time = datetime.now().isoformat()
+    nodes_path = os.path.join(output_dir, f"qa_nodes_gephi_{current_time}.csv")
+    edges_path = os.path.join(output_dir, f"qa_edges_gephi_{current_time}.csv")
     
     gephi_nodes.to_csv(nodes_path, index=False, encoding='utf-8')
     gephi_edges.to_csv(edges_path, index=False, encoding='utf-8')
@@ -443,8 +445,8 @@ def save_qa_network_artifacts_task(
     html_file_artifact_id = None
     try:
         # Save as a file that can be downloaded
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        html_filename = f"qa_network_interactive_{timestamp}.html"
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        html_filename = f"qa_network_interactive_{current_time}.html"
         visualization.write_html(html_filename)
         
         # Create link artifact pointing to the file
@@ -484,7 +486,7 @@ def save_qa_network_artifacts_task(
 
         ## Visualization Files Created:
         - Interactive HTML visualization (embedded above)
-        - Downloadable HTML file: `qa_network_interactive{timestamp}.html`
+        - Downloadable HTML file: `qa_network_interactive_{current_time}.html`
         - CSV files for Gephi import (if enabled)
             """
     

@@ -1,14 +1,14 @@
 import asyncio
 import json
 import pandas as pd
-import numpy as np
+# import numpy as np
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime#, timedelta
 import httpx
 from prefect import flow, task, get_run_logger
 from prefect.task_runners import ConcurrentTaskRunner
 from prefect.blocks.system import Secret
-import networkx as nx
+# import networkx as nx
 from collections import Counter
 import re
 import csv
@@ -20,6 +20,7 @@ class PipelineConfig:
     MAX_TOKENS = 4000
     TEMPERATURE = 0.1
     RATE_LIMIT_DELAY = 1  # seconds between API calls
+    RATE_LIMIT_DELAY_LONG = 5  # seconds between API calls (used for transcript processing)
     BATCH_SIZE = 10
 
 # Data Models
@@ -46,7 +47,7 @@ class FlatteningTransformation:
                  group_id: str = None):
         self.original_qa = original_qa
         self.flattened_qa = flattened_qa
-        self.transformation_type = transformation_type  # "unchanged", "question_standardized", "answer_standardized", "both_standardized", "removed"
+        self.transformation_type = transformation_type  # "unchanged", "question_standardized", "answer_standardized", "both_standardized"
         self.transformation_reason = transformation_reason
         self.group_id = group_id  # For tracking which pairs were grouped together
 
@@ -61,6 +62,7 @@ class FlatteningResults:
             'total_flattened': 0,
             'questions_standardized': 0,
             'answers_standardized': 0,
+            'reasons_standardized': 0,
             'pairs_removed': 0,
             'groups_created': 0
         }
@@ -172,12 +174,13 @@ async def extract_qa_pairs_from_transcript(transcript: TranscriptData) -> List[Q
 
     In case a question has multiple answers, and in case multiple reasons are given for an answer, create multiple question, answer, reason pairs for the same question.
 
+    Translate the answers, questions and reasons into English, if they are in another language.
     Transcript:
     {transcript.content}
 
     Return only the JSON array, no additional text. Make sure that the response can be parsed directly, so it starts and ends with curled backets.
     """
-
+    # TBD improve translation
     payload = {
         "model": PipelineConfig.LLM_MODEL,
         "max_tokens": PipelineConfig.MAX_TOKENS,
@@ -186,7 +189,7 @@ async def extract_qa_pairs_from_transcript(transcript: TranscriptData) -> List[Q
     }
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -256,7 +259,7 @@ async def batch_extract_qa_pairs(transcripts: List[TranscriptData]) -> List[QAPa
         
         # Pause between batches
         if i + PipelineConfig.BATCH_SIZE < len(transcripts):
-            await asyncio.sleep(5)
+            await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY_LONG)
     
     logger.info(f"Extracted total of {len(all_qa_pairs)} Q&A pairs")
     return all_qa_pairs
@@ -350,7 +353,7 @@ async def _flatten_questions_with_tracking(qa_pairs: List[QAPair], headers: Dict
         return question_mapping
     
     # Process questions in batches
-    batch_size = 100
+    batch_size = 20 #TBD - use pipeline class value
     question_mapping = {}
     
     for i in range(0, len(unique_questions), batch_size):
@@ -393,7 +396,7 @@ async def _flatten_answers_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
         return answer_mapping
     
     # Process answers in batches
-    batch_size = 100
+    batch_size = 20 #tbd use pipeline batch size
     answer_mapping = {}
     
     for i in range(0, len(unique_answers), batch_size):
@@ -436,7 +439,7 @@ async def _flatten_reasons_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
         return reason_mapping
     
     # Process reasons in batches
-    batch_size = 100
+    batch_size = 20 # TBD use pipeline batch size
     reason_mapping = {}
     
     for i in range(0, len(unique_reasons), batch_size):
@@ -489,8 +492,13 @@ async def _flatten_question_batch(questions: List[str], headers: Dict, logger) -
     Input questions:
     {json.dumps(questions_data, indent=2)}
 
-    Return a JSON array with objects containing "original_question" and "standardized_question". 
-    Return only the JSON array, no additional text. Make sure it starts and ends with square brackets.
+    IMPORTANT: Return ONLY a valid JSON array. No explanations, no additional text.
+    Each object must have "original_question" and "standardized_question" fields.
+    Example format:
+    [
+      {{"original_question": "What is X?", "standardized_question": "What is X?"}},
+      {{"original_question": "Tell me about X", "standardized_question": "What is X?"}}
+    ]
     """
     
     payload = {
@@ -501,7 +509,7 @@ async def _flatten_question_batch(questions: List[str], headers: Dict, logger) -
     }
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -532,6 +540,8 @@ async def _flatten_question_batch(questions: List[str], headers: Dict, logger) -
     
     except Exception as e:
         logger.error(f"Failed to flatten question batch: {str(e)}")
+        logger.error(f"{str(flattened_data)}")
+        logger.error(f"{str(item)}")
         # Return identity mapping as fallback
         return {q: q for q in questions}
 
@@ -560,6 +570,14 @@ async def _flatten_answer_batch(answers: List[str], headers: Dict, logger) -> Di
 
     Return a JSON array with objects containing "original_answer" and "standardized_answer". 
     Return only the JSON array, no additional text. Make sure it starts and ends with square brackets.
+
+    IMPORTANT: Return ONLY a valid JSON array. No explanations, no additional text.
+    Each object must have "original_answer" and "standardized_answer" fields.
+    Example format:
+    [
+      {{"original_answer": "I like X", "standardized_answer": "I like X"}},
+      {{"original_answer": "X is great", "standardized_answer": "I like X"}}
+    ]
     """
     
     payload = {
@@ -570,7 +588,7 @@ async def _flatten_answer_batch(answers: List[str], headers: Dict, logger) -> Di
     }
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -639,7 +657,7 @@ async def _flatten_reason_batch(reasons: List[str], headers: Dict, logger) -> Di
     }
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -776,7 +794,7 @@ def create_prefect_artifacts(
 
      # 2.5. Store Flattened QA Pairs Data
     qa_pairs_data_flattened = []
-    for qa in qa_pairs_flattened[:50]:  # Limit to first 50 for readability
+    for qa in qa_pairs_flattened:#[:50]:  # Limit to first 50 for readability
         qa_pairs_data_flattened.append({
             'transcript_id': qa.transcript_id,
             'question': qa.question,
@@ -800,8 +818,8 @@ def create_flattening_artifacts(
     flattening_results: FlatteningResults,
     raw_transcripts: List[TranscriptData],
     cleaned_transcripts: List[TranscriptData], 
-    # qa_pairs: List[QAPair],
-    # qa_pairs_flattened: List[QAPair],
+    qa_pairs: List[QAPair],
+    qa_pairs_flattened: List[QAPair],
     # statistical_results: Dict[str, Any],
     # connection_results: Dict[str, Any],
     # final_results: AnalysisResults
@@ -871,18 +889,18 @@ def create_flattening_artifacts(
     )
 
     # 2.3 Reason Mappings
-    answer_mappings_data = []
-    for orig, flat in flattening_results.answer_mappings.items():
-        answer_mappings_data.append({
-            'original_answer': orig,
-            'standardized_answer': flat,
+    reason_mappings_data = []
+    for orig, flat in flattening_results.reason_mappings.items():
+        reason_mappings_data.append({
+            'original_reason': orig,
+            'standardized_reason': flat,
             'changed': orig != flat
         })
     
     create_table_artifact(
-        key="answer-mappings",
-        table=answer_mappings_data,
-        description=f"Answer standardization mappings ({len(answer_mappings_data)} answers)"
+        key="reason-mappings",
+        table=reason_mappings_data,
+        description=f"reason standardization mappings ({len(reason_mappings_data)} reasons)"
     )
 
     # 3. Statistics Summary
@@ -897,6 +915,7 @@ def create_flattening_artifacts(
     ## Transformation Breakdown
     - **Questions Standardized**: {flattening_results.statistics['questions_standardized']:,}
     - **Answers Standardized**: {flattening_results.statistics['answers_standardized']:,}
+    - **Reasons Standardized**: {flattening_results.statistics['reasons_standardized']:,}
     - **Pairs Removed**: {flattening_results.statistics['pairs_removed']:,}
 
     ## Transformation Types
@@ -983,18 +1002,21 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
     """
     logger = get_run_logger()
     logger.info("Starting transcript processing pipeline")
-    
+    current_time = datetime.now().isoformat()
+
     # Step 1: Data ingestion and preprocessing
     raw_transcripts = load_transcripts(input_file_path)
     cleaned_transcripts = clean_transcripts(raw_transcripts)
+    # TBD store transcripts locally
+    # TBD add "ammend transcripts funciton."
     
     # Step 2: LLM processing for Q&A extraction
     qa_pairs_raw = await batch_extract_qa_pairs(cleaned_transcripts)
-
+    export_qa_pairs_to_csv(f'qa_pairs_raw_{current_time}.csv', qa_pairs_raw)
     # Step 2.5: clean up and flatten the QA pairs, so that the same answers have the same wording (allow easier statistical analysis)
     qa_pairs_flattened_results = await flatten_qa_pairs_with_tracking(qa_pairs_raw)
     qa_pairs_flattened = qa_pairs_flattened_results.get_flattened_pairs()
-    
+    export_qa_pairs_to_csv(f'qa_pairs_flattenend_{current_time}.csv', qa_pairs_flattened)
     # # Step 3: Statistical analysis
     # statistical_results = perform_statistical_analysis(qa_pairs_flattened)
     
@@ -1002,8 +1024,9 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
     # connection_results = model_qa_connections(qa_pairs_flattened)
     
     # # Step 5: Compile final results
+    
     # final_results = compile_final_results(statistical_results, connection_results)
-   
+    
   # Step 6: Store artifacts for evaluation
     create_prefect_artifacts(
         raw_transcripts=raw_transcripts,
@@ -1027,7 +1050,8 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
     )
 
     # Step 7: Export qa_pairs_flattened to csv, for using in other scripts.
-    export_qa_pairs_to_csv('qa_pairs.csv', qa_pairs_flattened)
+    
+    
 
     logger.info("Pipeline completed successfully")
     # return final_results
@@ -1039,8 +1063,8 @@ if __name__ == "__main__":
     import asyncio
     
     async def run_pipeline():
-        results = await transcript_processing_pipeline("mock_feedback.csv")
-        
+        # results = await transcript_processing_pipeline("mock_feedback.csv")
+        results = await transcript_processing_pipeline("rwth_feedback.csv")
         # # Save results
         # TBD save other dataframes to json
 
