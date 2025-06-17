@@ -46,15 +46,17 @@ class QANetworkBuilder:
         self.node_info: Dict[int, NodeInfo] = {}
         self.edges: Dict[Tuple[int, int, str], int] = {}  # (source, target, type) -> multiplicity
         self.next_node_id = 1
-    
+
     def _get_or_create_node_id(self, content: str, node_type: str, transcript_id: str) -> int:
         """Get existing node ID or create new one for given content."""
         if content in self.content_to_node_id:
             node_id = self.content_to_node_id[content]
-            self.node_info[node_id].transcript_ids.add(transcript_id)
-            self.node_info[node_id].multiplicity += 1
+            # Only increment multiplicity if this transcript_id is new for the given content
+            if transcript_id not in self.node_info[node_id].transcript_ids:
+                self.node_info[node_id].transcript_ids.add(transcript_id)
+                self.node_info[node_id].multiplicity += 1
             return node_id
-        
+    
         node_id = self.next_node_id
         self.next_node_id += 1
         self.content_to_node_id[content] = node_id
@@ -344,7 +346,7 @@ def export_for_gephi_task(
     gephi_edges = gephi_edges[['Source', 'Target', 'Weight', 'edge_type', 'edge_multiplicity']]
     
     # Export to CSV
-    current_time = datetime.now().isoformat()
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     nodes_path = os.path.join(output_dir, f"qa_nodes_gephi_{current_time}.csv")
     edges_path = os.path.join(output_dir, f"qa_edges_gephi_{current_time}.csv")
     
@@ -541,7 +543,8 @@ def qa_network_pipeline(qa_pairs: List[QAPair], export_gephi: bool = True, outpu
 if __name__ == "__main__":
     # Example usage
     # sample_qa_pairs = create_sample_data()
-    processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs.csv')
+    # processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs.csv')
+    processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs_cleaned_20250613_163156_.csv') #TBD turn this into an input variable to the script.
     result = qa_network_pipeline(processed_qa_pairs, export_gephi=True, output_dir="my_gephi_files")
 
     # All artifacts are automatically created

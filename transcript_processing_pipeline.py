@@ -165,22 +165,32 @@ async def extract_qa_pairs_from_transcript(transcript: TranscriptData) -> List[Q
     logger.info(f"Headers prepared with API key: {bool(headers.get('x-api-key'))}")
 
     prompt = f"""
-    Please analyze the following feedback conversation transcript and extract all question-answer pairs along with the reasoning behind each answer.
+        Please analyze the following feedback conversation transcript and extract all question-answer pairs along with the reasoning behind each answer.
 
-    Format your response as a JSON array with objects containing:
-    - "question": The exact question asked
-    - "answer": The response given
-    - "reason": The reasoning or justification provided for the answer
+        SEGMENTATION RULES:
+        1. Split compound questions into separate question-answer pairs when they ask about distinctly different topics (e.g., "What are you studying and which semester are you in?" should become two separate pairs)
+        2. Keep questions together as one pair when they ask about the same topic with different options or clarifications (e.g., "How about the lecture format? Do you prefer block seminars or regular lectures?" asks about one topic: lecture format preference)
+        3. If a single answer addresses multiple distinct questions, split it appropriately to match each question
+        4. If multiple reasons are given for the same answer, create separate pairs for each reason
+        5. If a question has multiple distinct answers, create separate pairs for each answer
 
-    In case a question has multiple answers, and in case multiple reasons are given for an answer, create multiple question, answer, reason pairs for the same question.
 
-    Translate the answers, questions and reasons into English, if they are in another language.
-    Transcript:
-    {transcript.content}
+        Format your response as a JSON array with objects containing:
+        - "question": The exact question asked (split from compound questions when appropriate)
+        - "answer": The response given (split to match the corresponding question)
+        - "reason": The reasoning or justification provided for the answer (use "n/a" if no explicit reasoning or context is given in the transcript)
 
-    Return only the JSON array, no additional text. Make sure that the response can be parsed directly, so it starts and ends with curled backets.
-    """
-    # TBD improve translation
+
+        Translate the answers, questions and reasons into English, if they are in another language.
+
+        Transcript:
+        {transcript.content}
+
+        Return only the JSON array, no additional text. Make sure that the response can be parsed directly, so it starts and ends with curled brackets.
+        """
+
+
+ 
     payload = {
         "model": PipelineConfig.LLM_MODEL,
         "max_tokens": PipelineConfig.MAX_TOKENS,
@@ -270,8 +280,21 @@ async def batch_extract_qa_pairs(transcripts: List[TranscriptData]) -> List[QAPa
 # needs checks
 
 @task(name="flatten_qa_pairs_with_tracking", retries=3, retry_delay_seconds=60)
-async def flatten_qa_pairs_with_tracking(qa_pairs: List[QAPair]) -> FlatteningResults:
-    """Flatten question-answer pairs while tracking all transformations"""
+
+def extract_existing_standards(flattened_qa_pairs: List[QAPair]) -> Dict[str, List[str]]:
+    """Extract unique standardized questions, answers, and reasons from existing flattened pairs"""
+    existing_questions = list(set(qa.question for qa in flattened_qa_pairs))
+    existing_answers = list(set(qa.answer for qa in flattened_qa_pairs))
+    existing_reasons = list(set(qa.reason for qa in flattened_qa_pairs))
+    
+    return {
+        'questions': existing_questions,
+        'answers': existing_answers,
+        'reasons': existing_reasons
+    }
+
+async def flatten_qa_pairs_with_tracking_incremental(qa_pairs: List[QAPair], existing_pairs_given: bool = False, existing_flattened_pairs: List[QAPair] = None) -> FlatteningResults:
+    """Flatten question-answer pairs while tracking all transformations, using existing standards"""
     logger = get_run_logger()
     logger.info(f"Starting tracked flattening process for {len(qa_pairs)} Q&A pairs")
     
@@ -281,6 +304,12 @@ async def flatten_qa_pairs_with_tracking(qa_pairs: List[QAPair]) -> FlatteningRe
     if not qa_pairs:
         logger.warning("No Q&A pairs to flatten")
         return results
+    
+    # Extract existing standards if provided
+    existing_standards = {}
+    if existing_pairs_given and existing_flattened_pairs:
+        existing_standards = extract_existing_standards(existing_flattened_pairs)
+        logger.info(f"Using existing standards: {len(existing_standards['questions'])} questions, {len(existing_standards['answers'])} answers, {len(existing_standards['reasons'])} reasons")
     
     # Get API key
     try:
@@ -301,15 +330,15 @@ async def flatten_qa_pairs_with_tracking(qa_pairs: List[QAPair]) -> FlatteningRe
     try:
         # Phase 1: Flatten questions and track mappings
         logger.info("Phase 1: Flattening questions globally with tracking")
-        question_mapping = await _flatten_questions_with_tracking(qa_pairs, headers, logger, results)
+        question_mapping = await _flatten_questions_with_tracking_incremental(qa_pairs, headers, logger, results, existing_standards.get('questions', []) if existing_pairs_given else [])
         
         # Phase 2: Flatten answers globally and track mappings
         logger.info("Phase 2: Flattening answers globally with tracking")
-        answer_mapping = await _flatten_answers_with_tracking(qa_pairs, headers, logger, results)
+        answer_mapping = await _flatten_answers_with_tracking_incremental(qa_pairs, headers, logger, results, existing_standards.get('answers', []) if existing_pairs_given else [])
         
         # Phase 3: Flatten reasons globally and track mappings
         logger.info("Phase 3: Flattening reasons globally with tracking")
-        reason_mapping = await _flatten_reasons_with_tracking(qa_pairs, headers, logger, results)
+        reason_mapping = await _flatten_reasons_with_tracking_incremental(qa_pairs, headers, logger, results, existing_standards.get('reasons', []) if existing_pairs_given else [])
         
         # Phase 4: Apply all mappings and create final transformations
         logger.info("Phase 4: Applying all mappings and creating transformations")
@@ -341,7 +370,7 @@ async def flatten_qa_pairs_with_tracking(qa_pairs: List[QAPair]) -> FlatteningRe
 
 
 
-async def _flatten_questions_with_tracking(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults) -> Dict[str, str]:
+async def _flatten_questions_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_questions: List[str]) -> Dict[str, str]:
     """Phase 1 with tracking: Create question mappings and record transformations"""
     
     unique_questions = list(set(qa.question for qa in qa_pairs))
@@ -361,7 +390,7 @@ async def _flatten_questions_with_tracking(qa_pairs: List[QAPair], headers: Dict
         logger.info(f"Processing question batch {i//batch_size + 1}/{(len(unique_questions) + batch_size - 1)//batch_size}")
         
         try:
-            batch_mapping = await _flatten_question_batch(batch, headers, logger)
+            batch_mapping = await _flatten_question_batch_incremental(batch, headers, logger, existing_questions)
             question_mapping.update(batch_mapping)
             
             if i + batch_size < len(unique_questions):
@@ -384,7 +413,7 @@ async def _flatten_questions_with_tracking(qa_pairs: List[QAPair], headers: Dict
     return question_mapping
 
 
-async def _flatten_answers_with_tracking(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults) -> Dict[str, str]:
+async def _flatten_answers_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_answers: List[str]) -> Dict[str, str]:
     """Phase 2 with tracking: Create answer mappings and record transformations"""
     
     unique_answers = list(set(qa.answer for qa in qa_pairs))
@@ -396,7 +425,7 @@ async def _flatten_answers_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
         return answer_mapping
     
     # Process answers in batches
-    batch_size = 20 #tbd use pipeline batch size
+    batch_size = 20 #TBD - use pipeline class value
     answer_mapping = {}
     
     for i in range(0, len(unique_answers), batch_size):
@@ -404,7 +433,7 @@ async def _flatten_answers_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
         logger.info(f"Processing answer batch {i//batch_size + 1}/{(len(unique_answers) + batch_size - 1)//batch_size}")
         
         try:
-            batch_mapping = await _flatten_answer_batch(batch, headers, logger)
+            batch_mapping = await _flatten_answer_batch_incremental(batch, headers, logger, existing_answers)
             answer_mapping.update(batch_mapping)
             
             if i + batch_size < len(unique_answers):
@@ -427,7 +456,7 @@ async def _flatten_answers_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
     return answer_mapping
 
 
-async def _flatten_reasons_with_tracking(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults) -> Dict[str, str]:
+async def _flatten_reasons_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_reasons: List[str]) -> Dict[str, str]:
     """Phase 3 with tracking: Create reason mappings and record transformations"""
     
     unique_reasons = list(set(qa.reason for qa in qa_pairs))
@@ -439,7 +468,7 @@ async def _flatten_reasons_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
         return reason_mapping
     
     # Process reasons in batches
-    batch_size = 20 # TBD use pipeline batch size
+    batch_size = 20 #TBD - use pipeline class value
     reason_mapping = {}
     
     for i in range(0, len(unique_reasons), batch_size):
@@ -447,7 +476,7 @@ async def _flatten_reasons_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
         logger.info(f"Processing reason batch {i//batch_size + 1}/{(len(unique_reasons) + batch_size - 1)//batch_size}")
         
         try:
-            batch_mapping = await _flatten_reason_batch(batch, headers, logger)
+            batch_mapping = await _flatten_reason_batch_incremental(batch, headers, logger, existing_reasons)
             reason_mapping.update(batch_mapping)
             
             if i + batch_size < len(unique_reasons):
@@ -470,27 +499,35 @@ async def _flatten_reasons_with_tracking(qa_pairs: List[QAPair], headers: Dict, 
     return reason_mapping
 
 
-async def _flatten_question_batch(questions: List[str], headers: Dict, logger) -> Dict[str, str]:
-    """Flatten a batch of questions"""
+async def _flatten_question_batch_incremental(questions: List[str], headers: Dict, logger, existing_questions: List[str]) -> Dict[str, str]:
+    """Flatten a batch of questions with existing context"""
     
     questions_data = [{"index": i, "question": q} for i, q in enumerate(questions)]
+    existing_context = ""
+    if existing_questions:
+        existing_context = f"""
+    
+    EXISTING STANDARDIZED QUESTIONS (use these as preferred standards when applicable):
+    {json.dumps([{"question": q} for q in existing_questions], indent=2)}"""
     
     prompt = f"""
     Analyze the following questions and identify groups that ask essentially the same thing but with different wording.
 
     For each group of semantically equivalent questions:
     1. Choose the clearest, most concise version as the standard
-    2. Map all similar variants to this standard version
-    3. Preserve questions that are truly unique
+    2. If a new question is similar to an existing standardized question, map it to that existing standard
+    3. Map all similar variants to this standard version
+    4. Preserve questions that are truly unique
 
     Rules:
     - Only group questions that are truly asking the same thing
     - Preserve the exact meaning and intent
+    - PRIORITIZE mapping to existing standardized questions when semantically equivalent
     - Choose the most natural, clear wording as the standard
     - Return ALL questions with their standardized version (even if unchanged)
 
-    Input questions:
-    {json.dumps(questions_data, indent=2)}
+    Input questions to analyze:
+    {json.dumps(questions_data, indent=2)}{existing_context}
 
     IMPORTANT: Return ONLY a valid JSON array. No explanations, no additional text.
     Each object must have "original_question" and "standardized_question" fields.
@@ -540,33 +577,39 @@ async def _flatten_question_batch(questions: List[str], headers: Dict, logger) -
     
     except Exception as e:
         logger.error(f"Failed to flatten question batch: {str(e)}")
-        logger.error(f"{str(flattened_data)}")
-        logger.error(f"{str(item)}")
         # Return identity mapping as fallback
         return {q: q for q in questions}
 
 
-async def _flatten_answer_batch(answers: List[str], headers: Dict, logger) -> Dict[str, str]:
-    """Flatten a batch of answers"""
+async def _flatten_answer_batch_incremental(answers: List[str], headers: Dict, logger, existing_answers: List[str]) -> Dict[str, str]:
+    """Flatten a batch of answers with existing context"""
     
     answers_data = [{"index": i, "answer": a} for i, a in enumerate(answers)]
+    existing_context = ""
+    if existing_answers:
+        existing_context = f"""
+
+    EXISTING STANDARDIZED ANSWERS (use these as preferred standards when applicable):
+    {json.dumps([{"answer": a} for a in existing_answers], indent=2)}"""
     
     prompt = f"""
     Analyze the following answers and identify groups that convey essentially the same information but with different wording.
 
     For each group of semantically equivalent answers:
     1. Choose the clearest, most complete version as the standard
-    2. Map all similar variants to this standard version
-    3. Preserve answers that are truly unique
+    2. If a new answer is similar to an existing standardized answer, map it to that existing standard
+    3. Map all similar variants to this standard version
+    4. Preserve answers that are truly unique
 
     Rules:
     - Only group answers that convey essentially the same information
     - Preserve the exact meaning and intent
+    - PRIORITIZE mapping to existing standardized answers when semantically equivalent
     - Choose the most natural, clear wording as the standard
     - Return ALL answers with their standardized version (even if unchanged)
 
-    Input answers:
-    {json.dumps(answers_data, indent=2)}
+    Input answers to analyze:
+    {json.dumps(answers_data, indent=2)}{existing_context}
 
     Return a JSON array with objects containing "original_answer" and "standardized_answer". 
     Return only the JSON array, no additional text. Make sure it starts and ends with square brackets.
@@ -623,31 +666,62 @@ async def _flatten_answer_batch(answers: List[str], headers: Dict, logger) -> Di
         return {a: a for a in answers}
 
 
-async def _flatten_reason_batch(reasons: List[str], headers: Dict, logger) -> Dict[str, str]:
-    """Flatten a batch of reasons"""
+async def _flatten_reason_batch_incremental(reasons: List[str], headers: Dict, logger, existing_reasons: List[str]) -> Dict[str, str]:
+    """Flatten a batch of reasons with existing context"""
     
     reasons_data = [{"index": i, "reason": r} for i, r in enumerate(reasons)]
+    existing_context = ""
+    if existing_reasons:
+        existing_context = f"""
+
+    EXISTING STANDARDIZED REASONS (use these as preferred standards when applicable):
+    {json.dumps([{"reason": r} for r in existing_reasons], indent=2)}"""
     
+    # prompt = f"""
+    # Analyze the following reasons and identify groups that convey essentially the same information but with different wording.
+
+    # For each group of semantically equivalent reasons:
+    # 1. Choose the clearest, most complete version as the standard
+    # 2. Map all similar variants to this standard version
+    # 3. Preserve reasons that are truly unique
+
+    # Rules:
+    # - Only group reasons that convey essentially the same information
+    # - Preserve the exact meaning and intent
+    # - Choose the most natural, clear wording as the standard
+    # - Return ALL reasons with their standardized version (even if unchanged)
+
+    # Input reasons to analyze:
+    # {json.dumps(reasons_data, indent=2)}
+
+    # Return a JSON array with objects containing "original_reason" and "standardized_reason". 
+    # Return only the JSON array, no additional text. Make sure it starts and ends with square brackets.
+    # """
+
+    # with context of existing reasons - better mapping to expansion.
     prompt = f"""
     Analyze the following reasons and identify groups that convey essentially the same information but with different wording.
 
     For each group of semantically equivalent reasons:
     1. Choose the clearest, most complete version as the standard
-    2. Map all similar variants to this standard version
-    3. Preserve reasons that are truly unique
+    2. If a new reason is similar to an existing standardized reason, map it to that existing standard
+    3. Map all similar variants to this standard version
+    4. Preserve reasons that are truly unique
 
     Rules:
     - Only group reasons that convey essentially the same information
     - Preserve the exact meaning and intent
+    - PRIORITIZE mapping to existing standardized reasons when semantically equivalent
     - Choose the most natural, clear wording as the standard
     - Return ALL reasons with their standardized version (even if unchanged)
 
-    Input reasons:
-    {json.dumps(reasons_data, indent=2)}
+    Input reasons to analyze:
+    {json.dumps(reasons_data, indent=2)}{existing_context}
 
     Return a JSON array with objects containing "original_reason" and "standardized_reason". 
     Return only the JSON array, no additional text. Make sure it starts and ends with square brackets.
     """
+    
     
     payload = {
         "model": PipelineConfig.LLM_MODEL,
@@ -754,7 +828,7 @@ def create_prefect_artifacts(
     import json
     from datetime import datetime
     
-    current_time = datetime.now().isoformat()
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # 1. Store Transcript Data Overview
     transcript_overview = []
@@ -792,7 +866,7 @@ def create_prefect_artifacts(
         description=f"Sample of extracted Q&A pairs (showing first 50 of {len(qa_pairs)} total)"
     )
 
-     # 2.5. Store Flattened QA Pairs Data
+     # 3. Store Flattened QA Pairs Data
     qa_pairs_data_flattened = []
     for qa in qa_pairs_flattened:#[:50]:  # Limit to first 50 for readability
         qa_pairs_data_flattened.append({
@@ -820,9 +894,6 @@ def create_flattening_artifacts(
     cleaned_transcripts: List[TranscriptData], 
     qa_pairs: List[QAPair],
     qa_pairs_flattened: List[QAPair],
-    # statistical_results: Dict[str, Any],
-    # connection_results: Dict[str, Any],
-    # final_results: AnalysisResults
 ):
 
     logger = get_run_logger()
@@ -833,7 +904,7 @@ def create_flattening_artifacts(
     import json
     from datetime import datetime
     
-    current_time = datetime.now().isoformat()
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # 1. Transformation Summary
     transformation_summary = []
@@ -954,12 +1025,7 @@ def create_flattening_artifacts(
             'total_pairs': len(qa_pairs),
             'sample_questions': [qa.question for qa in qa_pairs[:5]],
             'transcripts_with_qa': list(set(qa.transcript_id for qa in qa_pairs))
-        },
-        # 'analysis_summary': {
-        #     'statistical_results': statistical_results,
-        #     'connection_results': connection_results,
-        #     'final_insights': final_results.insights
-        # }
+        }
     }
     
     create_markdown_artifact(
@@ -977,7 +1043,15 @@ def create_flattening_artifacts(
         'qa_pairs_stored': len(qa_pairs),
         # 'insights_generated': len(final_results.insights)
     }
-@task(name="export-data-csv", retries=1)
+
+@task(name="combine-qa-pair-sets", retries=1)
+def combine_flattening_results(existing_flattened_pairs: List[QAPair], new_results: FlatteningResults) -> List[QAPair]:
+    """Combine existing flattened QA pairs with newly flattened ones"""
+    combined_pairs = existing_flattened_pairs.copy()
+    combined_pairs.extend(new_results.get_flattened_pairs())
+    return combined_pairs
+
+@task(name="export-qa-pair-csv", retries=1)
 def export_qa_pairs_to_csv(filename: str, qa_pairs: List[QAPair]):
     with open(filename, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
@@ -985,57 +1059,84 @@ def export_qa_pairs_to_csv(filename: str, qa_pairs: List[QAPair]):
         for qa in qa_pairs:
             writer.writerow([qa.question, qa.answer, qa.reason, qa.transcript_id])
 
+@task(name="import-qa-pair-csv", retries=1)
+def import_qa_pairs_from_csv(filename: str) -> List[QAPair]:
+    qa_pairs = []
+    with open(filename, mode='r', newline='', encoding='utf-8') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            qa_pair = QAPair(
+                question=row['question'],
+                answer=row['answer'],
+                reason=row['reason'],
+                transcript_id=row['transcript_id']
+            )
+            qa_pairs.append(qa_pair)
+    return qa_pairs
+
+@task(name="export-transcript-json", retries=1)
+def export_transcript(filename: str, data: List[TranscriptData]):
+    with open(filename, 'w') as f:
+        json.dump([item.__dict__ for item in data], f)
+
+# TBD - implement the use of this function to start with processed transcript data.
+@task(name="import-transctipt-json", retries=1)
+def import_transcript(filename: str) -> List[TranscriptData]:
+    with open(filename, 'r') as f:
+        data = json.load(f)
+    return [TranscriptData(**item) for item in data]
+
 # Main Pipeline Flow
 @flow(name="transcript-processing-pipeline", task_runner=ConcurrentTaskRunner())
-async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResults:
+async def transcript_processing_pipeline(input_file_path: str, existing_pairs_given: bool, existing_qa_path: str = "") -> AnalysisResults:
+ 
+
     """
     Main pipeline flow for processing feedback transcripts
     
     Sequential steps:
     1. Load and clean transcripts
     2. Extract Q&A pairs using LLM
-    2.5 Flatten Q&A pairs to standardize similar content
-    3. Perform statistical analysis
-    4. Model connections between responses
-    5. Compile final results
-    6. Store artifacts for evaluation
+    3. Flatten Q&A pairs to standardize similar content
+    4. Store artifacts for evaluation
     """
     logger = get_run_logger()
     logger.info("Starting transcript processing pipeline")
-    current_time = datetime.now().isoformat()
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Step 1: Data ingestion and preprocessing
     raw_transcripts = load_transcripts(input_file_path)
     cleaned_transcripts = clean_transcripts(raw_transcripts)
-    # TBD store transcripts locally
+    export_transcript(f"cleanded_transcripts_{current_time}.json", cleaned_transcripts)
+
     # TBD add "ammend transcripts funciton."
     
     # Step 2: LLM processing for Q&A extraction
     qa_pairs_raw = await batch_extract_qa_pairs(cleaned_transcripts)
     export_qa_pairs_to_csv(f'qa_pairs_raw_{current_time}.csv', qa_pairs_raw)
-    # Step 2.5: clean up and flatten the QA pairs, so that the same answers have the same wording (allow easier statistical analysis)
-    qa_pairs_flattened_results = await flatten_qa_pairs_with_tracking(qa_pairs_raw)
+    
+    # Step 3: clean up and flatten the QA pairs, so that the same answers have the same wording (allow easier statistical analysis)
+    # if 
+    existing_flattened_pairs = None 
+    if existing_pairs_given and existing_qa_path:
+        existing_flattened_pairs = import_qa_pairs_from_csv(existing_qa_path)
+
+    qa_pairs_flattened_results = await flatten_qa_pairs_with_tracking_incremental(qa_pairs_raw, existing_pairs_given, existing_flattened_pairs)
     qa_pairs_flattened = qa_pairs_flattened_results.get_flattened_pairs()
     export_qa_pairs_to_csv(f'qa_pairs_flattenend_{current_time}.csv', qa_pairs_flattened)
-    # # Step 3: Statistical analysis
-    # statistical_results = perform_statistical_analysis(qa_pairs_flattened)
+   
     
-    # # Step 4: Connection modeling
-    # connection_results = model_qa_connections(qa_pairs_flattened)
+    if existing_pairs_given:
+        qa_pairs_combined = combine_flattening_results(existing_flattened_pairs, qa_pairs_flattened_results)
+        export_qa_pairs_to_csv(f'qa_pairs_combined_{current_time}.csv', qa_pairs_combined)
+
     
-    # # Step 5: Compile final results
-    
-    # final_results = compile_final_results(statistical_results, connection_results)
-    
-  # Step 6: Store artifacts for evaluation
+  # Step 4: Store artifacts for evaluation
     create_prefect_artifacts(
         raw_transcripts=raw_transcripts,
         cleaned_transcripts=cleaned_transcripts,
         qa_pairs=qa_pairs_raw,  # Original pairs
         qa_pairs_flattened=qa_pairs_flattened,  # Flattened pairs
-        # statistical_results=statistical_results,
-        # connection_results=connection_results,
-        # final_results=final_results
     )
 
     create_flattening_artifacts(
@@ -1044,17 +1145,13 @@ async def transcript_processing_pipeline(input_file_path: str) -> AnalysisResult
         cleaned_transcripts=cleaned_transcripts,
         qa_pairs=qa_pairs_raw,  # Original pairs
         qa_pairs_flattened=qa_pairs_flattened,  # Flattened pairs
-        # statistical_results=statistical_results,
-        # connection_results=connection_results,
-        # final_results=final_results
-    )
 
-    # Step 7: Export qa_pairs_flattened to csv, for using in other scripts.
+    )
     
     
 
     logger.info("Pipeline completed successfully")
-    # return final_results
+
     return qa_pairs_flattened_results
 
 # Deployment and Scheduling
@@ -1064,23 +1161,10 @@ if __name__ == "__main__":
     
     async def run_pipeline():
         # results = await transcript_processing_pipeline("mock_feedback.csv")
-        results = await transcript_processing_pipeline("rwth_feedback.csv")
-        # # Save results
-        # TBD save other dataframes to json
-
-        # with open(f"analysis_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
-        #     json.dump({
-        #         'stats': results.stats,
-        #         'connections': results.connections,
-        #         'insights': results.insights,
-        #         'generated_at': datetime.now().isoformat()
-        #     }, f, indent=2, default=str)
+        results = await transcript_processing_pipeline("rwth_feedback1-4.csv",existing_pairs_given = False, existing_qa_path = "")
         
         
         print("Pipeline completed successfully!")
-        # print(f"Generated {len(results.insights)} insights:")
-        # for insight in results.insights:
-        #     print(f"- {insight}")
-    
+
     # Run the pipeline
     asyncio.run(run_pipeline())
