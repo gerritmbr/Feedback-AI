@@ -84,13 +84,17 @@ class QANetworkBuilder:
             answer_id = self._get_or_create_node_id(
                 qa_pair.answer, "answer", qa_pair.transcript_id
             )
-            reason_id = self._get_or_create_node_id(
-                qa_pair.reason, "reason", qa_pair.transcript_id
-            )
-            
-            # Add edges within QA pair
+
             self._add_edge(question_id, answer_id, "question_to_answer")
-            self._add_edge(answer_id, reason_id, "answer_to_reason")
+
+            # Only create reason node and edge if reason is not "n/a"
+            if qa_pair.reason and qa_pair.reason.lower() != "n/a":
+
+                reason_id = self._get_or_create_node_id(
+                    qa_pair.reason, "reason", qa_pair.transcript_id
+                )
+            
+                self._add_edge(answer_id, reason_id, "answer_to_reason")
         
         # Step 2: Create edges between answers/reasons with same transcript_id
         self._create_same_transcript_edges()
@@ -544,7 +548,7 @@ if __name__ == "__main__":
     # Example usage
     # sample_qa_pairs = create_sample_data()
     # processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs.csv')
-    processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs_cleaned_20250613_163156_.csv') #TBD turn this into an input variable to the script.
+    processed_qa_pairs = import_qa_pairs_from_csv('output_data/qa_pairs_cleaned_and_flattened_20250620_163533.csv') #TBD turn this into an input variable to the script.
     result = qa_network_pipeline(processed_qa_pairs, export_gephi=True, output_dir="my_gephi_files")
 
     # All artifacts are automatically created

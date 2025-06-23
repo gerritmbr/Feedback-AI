@@ -17,6 +17,7 @@ import csv
 class PipelineConfig:
     LLM_API_URL = "https://api.anthropic.com/v1/messages"
     LLM_MODEL = "claude-opus-4-20250514"
+    # LLM_MODEL = "claude-3-5-sonnet-20241022"
     MAX_TOKENS = 4000
     TEMPERATURE = 0.1
     RATE_LIMIT_DELAY = 1  # seconds between API calls
@@ -137,7 +138,7 @@ def clean_transcripts(transcripts: List[TranscriptData]) -> List[TranscriptData]
     return cleaned_transcripts
 
 # Step 2: LLM Processing for Q&A Extraction
-@task(name="extract_qa_pairs", retries=3, retry_delay_seconds=60)
+@task(name="extract_qa_pairs", retries=5, retry_delay_seconds=60)
 async def extract_qa_pairs_from_transcript(transcript: TranscriptData) -> List[QAPair]:
     """Extract question-answer pairs from a single transcript using LLM"""
     logger = get_run_logger()
@@ -199,7 +200,7 @@ async def extract_qa_pairs_from_transcript(transcript: TranscriptData) -> List[Q
     }
     
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -279,7 +280,7 @@ async def batch_extract_qa_pairs(transcripts: List[TranscriptData]) -> List[QAPa
 # Step 2.5: clean up and flatten the QA pairs, so that the same answers have the same wording (allow easier statistical analysis)
 # needs checks
 
-@task(name="flatten_qa_pairs_with_tracking", retries=3, retry_delay_seconds=60)
+@task(name="flatten_qa_pairs_with_tracking", retries=5, retry_delay_seconds=60)
 
 def extract_existing_standards(flattened_qa_pairs: List[QAPair]) -> Dict[str, List[str]]:
     """Extract unique standardized questions, answers, and reasons from existing flattened pairs"""
@@ -370,135 +371,9 @@ async def flatten_qa_pairs_with_tracking_incremental(qa_pairs: List[QAPair], exi
 
 
 
-async def _flatten_questions_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_questions: List[str]) -> Dict[str, str]:
-    """Phase 1 with tracking: Create question mappings and record transformations"""
-    
-    unique_questions = list(set(qa.question for qa in qa_pairs))
-    logger.info(f"Found {len(unique_questions)} unique questions to analyze")
-    
-    if len(unique_questions) <= 1:
-        question_mapping = {q: q for q in unique_questions}
-        results.question_mappings = question_mapping
-        return question_mapping
-    
-    # Process questions in batches
-    batch_size = 20 #TBD - use pipeline class value
-    question_mapping = {}
-    
-    for i in range(0, len(unique_questions), batch_size):
-        batch = unique_questions[i:i + batch_size]
-        logger.info(f"Processing question batch {i//batch_size + 1}/{(len(unique_questions) + batch_size - 1)//batch_size}")
-        
-        try:
-            batch_mapping = await _flatten_question_batch_incremental(batch, headers, logger, existing_questions)
-            question_mapping.update(batch_mapping)
-            
-            if i + batch_size < len(unique_questions):
-                await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY)
-                
-        except Exception as e:
-            logger.error(f"Failed to process question batch {i//batch_size + 1}: {str(e)}")
-            for question in batch:
-                question_mapping[question] = question
-            continue
-    
-    # Store question mappings in results
-    results.question_mappings = question_mapping
-    
-    # Count question standardizations
-    questions_changed = sum(1 for orig, flat in question_mapping.items() if orig != flat)
-    unique_flattened = len(set(question_mapping.values()))
-    logger.info(f"Question flattening: {questions_changed} questions standardized, {len(unique_questions)} -> {unique_flattened} unique questions")
-    
-    return question_mapping
 
 
-async def _flatten_answers_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_answers: List[str]) -> Dict[str, str]:
-    """Phase 2 with tracking: Create answer mappings and record transformations"""
-    
-    unique_answers = list(set(qa.answer for qa in qa_pairs))
-    logger.info(f"Found {len(unique_answers)} unique answers to analyze")
-    
-    if len(unique_answers) <= 1:
-        answer_mapping = {a: a for a in unique_answers}
-        results.answer_mappings = answer_mapping
-        return answer_mapping
-    
-    # Process answers in batches
-    batch_size = 20 #TBD - use pipeline class value
-    answer_mapping = {}
-    
-    for i in range(0, len(unique_answers), batch_size):
-        batch = unique_answers[i:i + batch_size]
-        logger.info(f"Processing answer batch {i//batch_size + 1}/{(len(unique_answers) + batch_size - 1)//batch_size}")
-        
-        try:
-            batch_mapping = await _flatten_answer_batch_incremental(batch, headers, logger, existing_answers)
-            answer_mapping.update(batch_mapping)
-            
-            if i + batch_size < len(unique_answers):
-                await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY)
-                
-        except Exception as e:
-            logger.error(f"Failed to process answer batch {i//batch_size + 1}: {str(e)}")
-            for answer in batch:
-                answer_mapping[answer] = answer
-            continue
-    
-    # Store answer mappings in results
-    results.answer_mappings = answer_mapping
-    
-    # Count answer standardizations
-    answers_changed = sum(1 for orig, flat in answer_mapping.items() if orig != flat)
-    unique_flattened = len(set(answer_mapping.values()))
-    logger.info(f"Answer flattening: {answers_changed} answers standardized, {len(unique_answers)} -> {unique_flattened} unique answers")
-    
-    return answer_mapping
-
-
-async def _flatten_reasons_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_reasons: List[str]) -> Dict[str, str]:
-    """Phase 3 with tracking: Create reason mappings and record transformations"""
-    
-    unique_reasons = list(set(qa.reason for qa in qa_pairs))
-    logger.info(f"Found {len(unique_reasons)} unique reasons to analyze")
-    
-    if len(unique_reasons) <= 1:
-        reason_mapping = {r: r for r in unique_reasons}
-        results.reason_mappings = reason_mapping
-        return reason_mapping
-    
-    # Process reasons in batches
-    batch_size = 20 #TBD - use pipeline class value
-    reason_mapping = {}
-    
-    for i in range(0, len(unique_reasons), batch_size):
-        batch = unique_reasons[i:i + batch_size]
-        logger.info(f"Processing reason batch {i//batch_size + 1}/{(len(unique_reasons) + batch_size - 1)//batch_size}")
-        
-        try:
-            batch_mapping = await _flatten_reason_batch_incremental(batch, headers, logger, existing_reasons)
-            reason_mapping.update(batch_mapping)
-            
-            if i + batch_size < len(unique_reasons):
-                await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY)
-                
-        except Exception as e:
-            logger.error(f"Failed to process reason batch {i//batch_size + 1}: {str(e)}")
-            for reason in batch:
-                reason_mapping[reason] = reason
-            continue
-    
-    # Store reason mappings in results
-    results.reason_mappings = reason_mapping
-    
-    # Count reason standardizations
-    reasons_changed = sum(1 for orig, flat in reason_mapping.items() if orig != flat)
-    unique_flattened = len(set(reason_mapping.values()))
-    logger.info(f"Reason flattening: {reasons_changed} reasons standardized, {len(unique_reasons)} -> {unique_flattened} unique reasons")
-    
-    return reason_mapping
-
-
+@task(name="flatten_question_batch", retries=3, retry_delay_seconds=60)
 async def _flatten_question_batch_incremental(questions: List[str], headers: Dict, logger, existing_questions: List[str]) -> Dict[str, str]:
     """Flatten a batch of questions with existing context"""
     
@@ -546,7 +421,7 @@ async def _flatten_question_batch_incremental(questions: List[str], headers: Dic
     }
     
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -575,12 +450,60 @@ async def _flatten_question_batch_incremental(questions: List[str], headers: Dic
             
             return mapping
     
+    # except Exception as e:
+    #     logger.error(f"Failed to flatten question batch: {str(e)}")
+    #     # Return identity mapping as fallback
+    #     return {q: q for q in questions}
     except Exception as e:
-        logger.error(f"Failed to flatten question batch: {str(e)}")
-        # Return identity mapping as fallback
-        return {q: q for q in questions}
+        logger.error(f"Failed to flatten question batch due to: {type(e).__name__}: {str(e)}")
+        # Re-raises the exception, causing Prefect to mark the task 'Failed' and trigger retries
+    raise e
+
+async def _flatten_questions_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_questions: List[str]) -> Dict[str, str]:
+    """Phase 1 with tracking: Create question mappings and record transformations"""
+    
+    unique_questions = list(set(qa.question for qa in qa_pairs))
+    logger.info(f"Found {len(unique_questions)} unique questions to analyze")
+    
+    if len(unique_questions) <= 1:
+        question_mapping = {q: q for q in unique_questions}
+        results.question_mappings = question_mapping
+        return question_mapping
+    
+    # Process questions in batches
+    batch_size = 20 #TBD - use pipeline class value
+    question_mapping = {}
+    
+    for i in range(0, len(unique_questions), batch_size):
+        batch = unique_questions[i:i + batch_size]
+        logger.info(f"Processing question batch {i//batch_size + 1}/{(len(unique_questions) + batch_size - 1)//batch_size}")
+        
+        try:
+            batch_mapping = await _flatten_question_batch_incremental(batch, headers, logger, existing_questions)
+            question_mapping.update(batch_mapping)
+            
+            if i + batch_size < len(unique_questions):
+                await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY)
+                
+        except Exception as e:
+            logger.error(f"Failed to process question batch {i//batch_size + 1}: {str(e)}")
+            for question in batch:
+                question_mapping[question] = question
+            continue
+    
+    # Store question mappings in results
+    results.question_mappings = question_mapping
+    
+    # Count question standardizations
+    questions_changed = sum(1 for orig, flat in question_mapping.items() if orig != flat)
+    unique_flattened = len(set(question_mapping.values()))
+    logger.info(f"Question flattening: {questions_changed} questions standardized, {len(unique_questions)} -> {unique_flattened} unique questions")
+    
+    return question_mapping
 
 
+
+@task(name="flatten_answer_batch", retries=3, retry_delay_seconds=60)
 async def _flatten_answer_batch_incremental(answers: List[str], headers: Dict, logger, existing_answers: List[str]) -> Dict[str, str]:
     """Flatten a batch of answers with existing context"""
     
@@ -602,8 +525,8 @@ async def _flatten_answer_batch_incremental(answers: List[str], headers: Dict, l
     4. Preserve answers that are truly unique
 
     Rules:
-    - Only group answers that convey essentially the same information
-    - Preserve the exact meaning and intent
+    - Only group answers that convey the same information
+    - Preserve meaning and intent
     - PRIORITIZE mapping to existing standardized answers when semantically equivalent
     - Choose the most natural, clear wording as the standard
     - Return ALL answers with their standardized version (even if unchanged)
@@ -631,7 +554,7 @@ async def _flatten_answer_batch_incremental(answers: List[str], headers: Dict, l
     }
     
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -660,12 +583,59 @@ async def _flatten_answer_batch_incremental(answers: List[str], headers: Dict, l
             
             return mapping
     
+    # except Exception as e:
+    #     logger.error(f"Failed to flatten answer batch: {str(e)}")
+    #     # Return identity mapping as fallback
+    #     return {a: a for a in answers}
     except Exception as e:
-        logger.error(f"Failed to flatten answer batch: {str(e)}")
-        # Return identity mapping as fallback
-        return {a: a for a in answers}
+        logger.error(f"Failed to flatten answer batch due to: {type(e).__name__}: {str(e)}")
+        # Re-raises the exception, causing Prefect to mark the task 'Failed' and trigger retries
+    raise e
+
+async def _flatten_answers_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_answers: List[str]) -> Dict[str, str]:
+    """Phase 2 with tracking: Create answer mappings and record transformations"""
+    
+    unique_answers = list(set(qa.answer for qa in qa_pairs))
+    logger.info(f"Found {len(unique_answers)} unique answers to analyze")
+    
+    if len(unique_answers) <= 1:
+        answer_mapping = {a: a for a in unique_answers}
+        results.answer_mappings = answer_mapping
+        return answer_mapping
+    
+    # Process answers in batches
+    batch_size = 20 #TBD - use pipeline class value
+    answer_mapping = {}
+    
+    for i in range(0, len(unique_answers), batch_size):
+        batch = unique_answers[i:i + batch_size]
+        logger.info(f"Processing answer batch {i//batch_size + 1}/{(len(unique_answers) + batch_size - 1)//batch_size}")
+        
+        try:
+            batch_mapping = await _flatten_answer_batch_incremental(batch, headers, logger, existing_answers)
+            answer_mapping.update(batch_mapping)
+            
+            if i + batch_size < len(unique_answers):
+                await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY)
+                
+        except Exception as e:
+            logger.error(f"Failed to process answer batch {i//batch_size + 1}: {str(e)}")
+            for answer in batch:
+                answer_mapping[answer] = answer
+            continue
+    
+    # Store answer mappings in results
+    results.answer_mappings = answer_mapping
+    
+    # Count answer standardizations
+    answers_changed = sum(1 for orig, flat in answer_mapping.items() if orig != flat)
+    unique_flattened = len(set(answer_mapping.values()))
+    logger.info(f"Answer flattening: {answers_changed} answers standardized, {len(unique_answers)} -> {unique_flattened} unique answers")
+    
+    return answer_mapping
 
 
+@task(name="flatten_reason_batch", retries=3, retry_delay_seconds=60)
 async def _flatten_reason_batch_incremental(reasons: List[str], headers: Dict, logger, existing_reasons: List[str]) -> Dict[str, str]:
     """Flatten a batch of reasons with existing context"""
     
@@ -731,7 +701,7 @@ async def _flatten_reason_batch_incremental(reasons: List[str], headers: Dict, l
     }
     
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 PipelineConfig.LLM_API_URL,
                 headers=headers,
@@ -760,10 +730,56 @@ async def _flatten_reason_batch_incremental(reasons: List[str], headers: Dict, l
             
             return mapping
     
+    # except Exception as e:
+    #     logger.error(f"Failed to flatten reason batch: {str(e)}")
+    #     # Return identity mapping as fallback
+    #     return {r: r for r in reasons}
     except Exception as e:
-        logger.error(f"Failed to flatten reason batch: {str(e)}")
-        # Return identity mapping as fallback
-        return {r: r for r in reasons}
+        logger.error(f"Failed to flatten reason batch due to: {type(e).__name__}: {str(e)}")
+        # Re-raises the exception, causing Prefect to mark the task 'Failed' and trigger retries
+    raise e
+
+async def _flatten_reasons_with_tracking_incremental(qa_pairs: List[QAPair], headers: Dict, logger, results: FlatteningResults, existing_reasons: List[str]) -> Dict[str, str]:
+    """Phase 3 with tracking: Create reason mappings and record transformations"""
+    
+    unique_reasons = list(set(qa.reason for qa in qa_pairs))
+    logger.info(f"Found {len(unique_reasons)} unique reasons to analyze")
+    
+    if len(unique_reasons) <= 1:
+        reason_mapping = {r: r for r in unique_reasons}
+        results.reason_mappings = reason_mapping
+        return reason_mapping
+    
+    # Process reasons in batches
+    batch_size = 20 #TBD - use pipeline class value
+    reason_mapping = {}
+    
+    for i in range(0, len(unique_reasons), batch_size):
+        batch = unique_reasons[i:i + batch_size]
+        logger.info(f"Processing reason batch {i//batch_size + 1}/{(len(unique_reasons) + batch_size - 1)//batch_size}")
+        
+        try:
+            batch_mapping = await _flatten_reason_batch_incremental(batch, headers, logger, existing_reasons)
+            reason_mapping.update(batch_mapping)
+            
+            if i + batch_size < len(unique_reasons):
+                await asyncio.sleep(PipelineConfig.RATE_LIMIT_DELAY)
+                
+        except Exception as e:
+            logger.error(f"Failed to process reason batch {i//batch_size + 1}: {str(e)}")
+            for reason in batch:
+                reason_mapping[reason] = reason
+            continue
+    
+    # Store reason mappings in results
+    results.reason_mappings = reason_mapping
+    
+    # Count reason standardizations
+    reasons_changed = sum(1 for orig, flat in reason_mapping.items() if orig != flat)
+    unique_flattened = len(set(reason_mapping.values()))
+    logger.info(f"Reason flattening: {reasons_changed} reasons standardized, {len(unique_reasons)} -> {unique_flattened} unique reasons")
+    
+    return reason_mapping
 
 
 async def _apply_mappings_with_tracking(qa_pairs: List[QAPair], question_mapping: Dict[str, str], answer_mapping: Dict[str, str], reason_mapping: Dict[str, str], results: FlatteningResults):
@@ -1107,13 +1123,13 @@ async def transcript_processing_pipeline(input_file_path: str, existing_pairs_gi
     # Step 1: Data ingestion and preprocessing
     raw_transcripts = load_transcripts(input_file_path)
     cleaned_transcripts = clean_transcripts(raw_transcripts)
-    export_transcript(f"cleanded_transcripts_{current_time}.json", cleaned_transcripts)
+    export_transcript(f"output_data/cleanded_transcripts_{current_time}.json", cleaned_transcripts)
 
     # TBD add "ammend transcripts funciton."
     
     # Step 2: LLM processing for Q&A extraction
     qa_pairs_raw = await batch_extract_qa_pairs(cleaned_transcripts)
-    export_qa_pairs_to_csv(f'qa_pairs_raw_{current_time}.csv', qa_pairs_raw)
+    export_qa_pairs_to_csv(f'output_data/qa_pairs_raw_{current_time}.csv', qa_pairs_raw)
     
     # Step 3: clean up and flatten the QA pairs, so that the same answers have the same wording (allow easier statistical analysis)
     # if 
@@ -1123,12 +1139,12 @@ async def transcript_processing_pipeline(input_file_path: str, existing_pairs_gi
 
     qa_pairs_flattened_results = await flatten_qa_pairs_with_tracking_incremental(qa_pairs_raw, existing_pairs_given, existing_flattened_pairs)
     qa_pairs_flattened = qa_pairs_flattened_results.get_flattened_pairs()
-    export_qa_pairs_to_csv(f'qa_pairs_flattenend_{current_time}.csv', qa_pairs_flattened)
+    export_qa_pairs_to_csv(f'output_data/qa_pairs_flattenend_{current_time}.csv', qa_pairs_flattened)
    
     
     if existing_pairs_given:
         qa_pairs_combined = combine_flattening_results(existing_flattened_pairs, qa_pairs_flattened_results)
-        export_qa_pairs_to_csv(f'qa_pairs_combined_{current_time}.csv', qa_pairs_combined)
+        export_qa_pairs_to_csv(f'output_data/qa_pairs_combined_{current_time}.csv', qa_pairs_combined)
 
     
   # Step 4: Store artifacts for evaluation
@@ -1161,7 +1177,9 @@ if __name__ == "__main__":
     
     async def run_pipeline():
         # results = await transcript_processing_pipeline("mock_feedback.csv")
-        results = await transcript_processing_pipeline("rwth_feedback1-4.csv",existing_pairs_given = False, existing_qa_path = "")
+        results = await transcript_processing_pipeline("input_data/rwth_feedback21-22.csv", 
+            existing_pairs_given = True, 
+            existing_qa_path = "output_data/qa_pairs_combined_20250620_095809.csv")
         
         
         print("Pipeline completed successfully!")
