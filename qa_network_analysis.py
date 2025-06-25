@@ -15,11 +15,12 @@ import csv
 
 
 class QAPair:
-    def __init__(self, question: str, answer: str, reason: str, transcript_id: str):
+    def __init__(self, question: str, answer: str, reason: str, transcript_id: str, content_category: str = ""):
         self.question = question
         self.answer = answer
         self.reason = reason
         self.transcript_id = transcript_id
+        self. content_category = content_category
 
 
 @dataclass
@@ -28,6 +29,7 @@ class NodeInfo:
     node_type: str
     transcript_ids: Set[str]
     multiplicity: int
+    content_category: str
 
 
 @dataclass
@@ -47,7 +49,7 @@ class QANetworkBuilder:
         self.edges: Dict[Tuple[int, int, str], int] = {}  # (source, target, type) -> multiplicity
         self.next_node_id = 1
 
-    def _get_or_create_node_id(self, content: str, node_type: str, transcript_id: str) -> int:
+    def _get_or_create_node_id(self, content: str, node_type: str, transcript_id: str, content_category: str) -> int:
         """Get existing node ID or create new one for given content."""
         if content in self.content_to_node_id:
             node_id = self.content_to_node_id[content]
@@ -64,7 +66,8 @@ class QANetworkBuilder:
             content=content,
             node_type=node_type,
             transcript_ids={transcript_id},
-            multiplicity=1
+            multiplicity=1,
+            content_category= content_category
         )
         return node_id
     
@@ -79,10 +82,10 @@ class QANetworkBuilder:
         # Step 1: Create nodes and basic edges (question -> answer -> reason)
         for qa_pair in qa_pairs:
             question_id = self._get_or_create_node_id(
-                qa_pair.question, "question", qa_pair.transcript_id
+                qa_pair.question, "question", qa_pair.transcript_id, qa_pair.content_category
             )
             answer_id = self._get_or_create_node_id(
-                qa_pair.answer, "answer", qa_pair.transcript_id
+                qa_pair.answer, "answer", qa_pair.transcript_id, qa_pair.content_category
             )
 
             self._add_edge(question_id, answer_id, "question_to_answer")
@@ -91,7 +94,7 @@ class QANetworkBuilder:
             if qa_pair.reason and qa_pair.reason.lower() != "n/a":
 
                 reason_id = self._get_or_create_node_id(
-                    qa_pair.reason, "reason", qa_pair.transcript_id
+                    qa_pair.reason, "reason", qa_pair.transcript_id, qa_pair.content_category
                 )
             
                 self._add_edge(answer_id, reason_id, "answer_to_reason")
@@ -141,7 +144,8 @@ class QANetworkBuilder:
                 "content": node_info.content,
                 "node_type": node_info.node_type,
                 "transcript_id": transcript_id_str,
-                "node_multiplicity": node_info.multiplicity
+                "node_multiplicity": node_info.multiplicity,
+                "content_category": node_info.content_category
             })
         
         qa_nodes = pd.DataFrame(nodes_data).sort_values("node_id")
@@ -170,7 +174,8 @@ def import_qa_pairs_from_csv(filename: str) -> list[QAPair]:
                 question=row['question'],
                 answer=row['answer'],
                 reason=row['reason'],
-                transcript_id=row['transcript_id']
+                transcript_id=row['transcript_id'],
+                content_category=row['content_category']
             )
             qa_pairs.append(qa_pair)
     return qa_pairs
@@ -198,7 +203,8 @@ def create_network_visualization_task(qa_nodes: pd.DataFrame, qa_edges: pd.DataF
             content=row['content'][:50] + "..." if len(row['content']) > 50 else row['content'],
             node_type=row['node_type'],
             multiplicity=row['node_multiplicity'],
-            transcript_id=row['transcript_id']
+            transcript_id=row['transcript_id'],
+            content_category=row['content_category']
         )
     
     # Add edges
@@ -270,6 +276,7 @@ def create_network_visualization_task(qa_nodes: pd.DataFrame, qa_edges: pd.DataF
             f"Multiplicity: {node_data['multiplicity']}<br>"
             f"Content: {node_data['content']}<br>"
             f"Transcript: {node_data['transcript_id']}"
+            f"Category: {node_data['content_category']}"
         )
         node_colors.append(color_map[node_data['node_type']])
         node_sizes.append(max(10, min(30, node_data['multiplicity'] * 5)))
@@ -334,7 +341,7 @@ def export_for_gephi_task(
     gephi_nodes['Label'] = gephi_nodes['content'].str[:50] + "..."  # Truncate for readability
     
     # Reorder columns for Gephi (Id and Label should be first)
-    gephi_nodes = gephi_nodes[['Id', 'Label', 'content', 'node_type', 'transcript_id', 'node_multiplicity']]
+    gephi_nodes = gephi_nodes[['Id', 'Label', 'content', 'node_type', 'transcript_id', 'node_multiplicity', 'content_category']]
     
     # Prepare edges for Gephi (Gephi expects 'Source' and 'Target' columns)
     gephi_edges = qa_edges.copy()
@@ -452,7 +459,7 @@ def save_qa_network_artifacts_task(
     try:
         # Save as a file that can be downloaded
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        html_filename = f"qa_network_interactive_{current_time}.html"
+        html_filename = f"output_data/qa_network_interactive_{current_time}.html"
         visualization.write_html(html_filename)
         
         # Create link artifact pointing to the file
@@ -548,8 +555,8 @@ if __name__ == "__main__":
     # Example usage
     # sample_qa_pairs = create_sample_data()
     # processed_qa_pairs = import_qa_pairs_from_csv('qa_pairs.csv')
-    processed_qa_pairs = import_qa_pairs_from_csv('output_data/qa_pairs_cleaned_and_flattened_20250620_163533.csv') #TBD turn this into an input variable to the script.
-    result = qa_network_pipeline(processed_qa_pairs, export_gephi=True, output_dir="my_gephi_files")
+    processed_qa_pairs = import_qa_pairs_from_csv('output_data/qa_pairs_cleaned_and_flattened_20250624_092926.csv') #TBD turn this into an input variable to the script.
+    result = qa_network_pipeline(processed_qa_pairs, export_gephi=True, output_dir="output_data/my_gephi_files")
 
     # All artifacts are automatically created
     print("Created artifacts:")

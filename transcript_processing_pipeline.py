@@ -32,11 +32,12 @@ class TranscriptData:
         self.metadata = metadata
 
 class QAPair:
-    def __init__(self, question: str, answer: str, reason: str, transcript_id: str):
+    def __init__(self, question: str, answer: str, reason: str, transcript_id: str, content_category: str = ""):
         self.question = question
         self.answer = answer
         self.reason = reason
         self.transcript_id = transcript_id
+        self.content_category = content_category
 
 
 class FlatteningTransformation:

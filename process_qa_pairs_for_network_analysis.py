@@ -21,6 +21,7 @@ class QAPair:
     answer: str
     reason: str
     transcript_id: str
+    content_category: str
 
 # Configuration
 class PipelineConfig:
@@ -33,20 +34,22 @@ class PipelineConfig:
     RATE_LIMIT_DELAY_LONG = 5  # seconds between API calls (used for more complex tasks like flattening)
     BATCH_SIZE = 10 # General batch size, adjusted per task as needed
 
+
 @task(name="import-qa-data")
 def import_qa_pairs_from_csv(filename: str) -> List[QAPair]:
-    qa_pairs = []
+    """Import QA pairs from CSV with elegant error handling and default values."""
     with open(filename, mode='r', newline='', encoding='utf-8') as file:
         reader = csv.DictReader(file)
-        for row in reader:
-            qa_pair = QAPair(
+        return [
+            QAPair(
                 question=row['question'],
                 answer=row['answer'],
                 reason=row['reason'],
-                transcript_id=row['transcript_id']
+                transcript_id=row['transcript_id'],
+                content_category=row.get('content_category', '')
             )
-            qa_pairs.append(qa_pair)
-    return qa_pairs
+            for row in reader
+        ]
 
 
 # Utility function to load processed transcript IDs from a file or database
@@ -730,7 +733,7 @@ def save_data_to_csv(qa_pairs: List[QAPair], output_path: str) -> str:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         
         with open(output_path, 'w', newline='', encoding='utf-8') as file:
-            fieldnames = ['question', 'answer', 'reason', 'transcript_id']
+            fieldnames = ['question', 'answer', 'reason', 'transcript_id', 'content_category']
             writer = csv.DictWriter(file, fieldnames=fieldnames)
             
             writer.writeheader()
@@ -739,7 +742,8 @@ def save_data_to_csv(qa_pairs: List[QAPair], output_path: str) -> str:
                     'question': qa_pair.question,
                     'answer': qa_pair.answer,
                     'reason': qa_pair.reason,
-                    'transcript_id': qa_pair.transcript_id
+                    'transcript_id': qa_pair.transcript_id,
+                    'content_category':qa_pair.content_category
                 })
         
         logger.info(f"Processed data saved to: {output_path}")
@@ -748,6 +752,167 @@ def save_data_to_csv(qa_pairs: List[QAPair], output_path: str) -> str:
     except Exception as e:
         logger.error(f"Error saving CSV file: {e}")
         raise
+
+@task(name='add-categories', retries=3, retry_delay_seconds=PipelineConfig.RATE_LIMIT_DELAY_LONG*10)
+async def add_question_categories(
+    qa_pairs: List[QAPair],
+    api_key: str,
+    processed_transcript_ids: Optional[Set[str]] = None,
+    merge_with_existing: bool = False
+    ) -> Tuple[List[QAPair], Dict[str, str]]:
+    
+    logger = get_run_logger()
+    
+    # Filter qa_pairs based on processed_transcript_ids
+    already_processed = []
+    new_pairs_to_process = []
+    
+    if processed_transcript_ids:
+        for qa_pair in qa_pairs:
+            if qa_pair.transcript_id in processed_transcript_ids:
+                already_processed.append(qa_pair)
+            else:
+                new_pairs_to_process.append(qa_pair)
+    else:
+        new_pairs_to_process = qa_pairs
+    
+    # Get unique questions from pairs to process
+    unique_questions_strings = sorted(list(set(qa_pair.question for qa_pair in new_pairs_to_process)))
+    total_unique_questions = len(unique_questions_strings)
+    context_information = '''Transcripts of voice based conversations with a Feedback Bot and students, on the topic of their studies with the goal of improving teaching'''
+    
+    logger.info(f"Identifying categories for {total_unique_questions} questions.")
+    
+    # Load existing categories if merge_with_existing is True
+    existing_question_to_category = {}
+    categories_file_path = "existing_categories.json"
+    categories_list_file_path = "categories_list.txt"
+    
+    if merge_with_existing:
+        try:
+            if os.path.exists(categories_file_path):
+                with open(categories_file_path, 'r', encoding='utf-8') as f:
+                    existing_question_to_category = json.load(f)
+                logger.info(f"Loaded {len(existing_question_to_category)} existing question-category mappings.")
+        except Exception as e:
+            logger.warning(f"Could not load existing categories: {e}")
+            existing_question_to_category = {}
+    
+    # Filter out questions that already have categories (if merging)
+    questions_needing_categorization = []
+    if merge_with_existing:
+        for question in unique_questions_strings:
+            if question not in existing_question_to_category:
+                questions_needing_categorization.append(question)
+    else:
+        questions_needing_categorization = unique_questions_strings
+    
+    # Initialize question to category mapping with existing data
+    question_to_category_map = existing_question_to_category.copy()
+    
+    # Only call LLM if there are new questions to categorize
+    if questions_needing_categorization:
+        prompt = f"""
+        Take these questions and group them into categories. 
+        Context: {context_information}
+        New Questions Batch to Process:
+        {json.dumps(questions_needing_categorization, indent=2)}
+        Return a JSON mapping where each question maps to its category name.
+        Format: {{"question": "category_name"}}
+        Ensure your output is a valid JSON object ONLY. Do not include any other text.
+        """
+        
+        payload = {
+            "model": PipelineConfig.LLM_MODEL,
+            "max_tokens": PipelineConfig.MAX_TOKENS,
+            "temperature": PipelineConfig.TEMPERATURE,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                response = await client.post(
+                    PipelineConfig.LLM_API_URL,
+                    headers={
+                        "x-api-key": api_key,
+                        "content-type": "application/json",
+                        "anthropic-version": "2023-06-01"
+                    },
+                    json=payload
+                )
+                response.raise_for_status()
+                llm_response_data = response.json()
+                llm_response_text = llm_response_data['content'][0]['text'].strip()
+                
+                # Extract JSON from response
+                json_match = re.search(r'```json\n(.*?)\n```', llm_response_text, re.DOTALL)
+                if json_match:
+                    json_string_to_parse = json_match.group(1).strip()
+                    logger.debug("Successfully extracted JSON from markdown block.")
+                else:
+                    json_string_to_parse = llm_response_text
+                    logger.warning("LLM response did not contain expected markdown JSON block. Attempting to parse as raw JSON.")
+                
+                # Parse LLM response
+                parsed_llm_output = json.loads(json_string_to_parse)
+                
+                # Validate that all questions got categories
+                for question in questions_needing_categorization:
+                    if question in parsed_llm_output:
+                        question_to_category_map[question] = parsed_llm_output[question]
+                    else:
+                        logger.warning(f"Question not found in LLM response, assigning default category: {question}")
+                        question_to_category_map[question] = "Uncategorized"
+                
+                logger.info(f"Successfully categorized {len(questions_needing_categorization)} new questions.")
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM response as JSON: {e}")
+            # Assign default category to all questions needing categorization
+            for question in questions_needing_categorization:
+                question_to_category_map[question] = "Uncategorized"
+        except Exception as e:
+            logger.error(f"Unexpected error during categorization: {e}")
+            # Assign default category to all questions needing categorization
+            for question in questions_needing_categorization:
+                question_to_category_map[question] = "Uncategorized"
+            raise e
+    
+    # Save updated categories to files
+    try:
+        # Save question-to-category mapping
+        with open(categories_file_path, 'w', encoding='utf-8') as f:
+            json.dump(question_to_category_map, f, indent=2, ensure_ascii=False)
+        
+        # Save unique categories list for easy manual manipulation
+        unique_categories = sorted(list(set(question_to_category_map.values())))
+        with open(categories_list_file_path, 'w', encoding='utf-8') as f:
+            for category in unique_categories:
+                f.write(f"{category}\n")
+        
+        logger.info(f"Saved {len(question_to_category_map)} question-category mappings to {categories_file_path}")
+        logger.info(f"Saved {len(unique_categories)} unique categories to {categories_list_file_path}")
+    except Exception as e:
+        logger.error(f"Failed to save categories to file: {e}")
+    
+    # Update qa_pairs with categories
+    updated_qa_pairs = []
+    
+    # Add already processed pairs (unchanged)
+    updated_qa_pairs.extend(already_processed)
+    
+    # Add newly processed pairs with categories
+    for qa_pair in new_pairs_to_process:
+        if qa_pair.question in question_to_category_map:
+            qa_pair.content_category = question_to_category_map[qa_pair.question]
+        else:
+            logger.warning(f"No category found for question, assigning default: {qa_pair.question}")
+            qa_pair.content_category = "Uncategorized"
+        updated_qa_pairs.append(qa_pair)
+    
+    logger.info(f"Updated {len(new_pairs_to_process)} qa_pairs with categories.")
+    
+    return updated_qa_pairs, question_to_category_map
 
 @task(name="save_answer_mapping")
 def save_mapping_to_json(mapping: Dict[str, str], output_path: str, map_name: str = "Answer Mapping") -> str:
@@ -874,18 +1039,22 @@ async def clean_dataset_answers_flow(
 
     # 3. Flatten questions (group semantically similar ones from the 'cleaned' set)
     flattened_qa_pairs, flattening_question_mapping = await flatten_questions(
-        cleaned_qa_pairs, 
+        flattened_qa_pairs, #cleaned_qa_pairs, 
         validated_api_key, 
-        processed_transcript_ids= None, # Pass the *cleaned* QA pairs to flatten
+        processed_transcript_ids= processed_ids, # Pass the *cleaned* QA pairs to flatten
     )
 
     save_mapping_to_json(flattening_question_mapping, flattening_question_mapping_json_path, map_name="Flattening Question Mapping")
 
+    categorized_qa_pairs, question_to_category_map = await add_question_categories(cleaned_qa_pairs,validated_api_key)
+
+    # save_mapping_to_json(question_to_category_map, question_to_category_map_json_path, map_name="Category Mapping")
+
     # Save the final (cleaned and flattened) QA pairs to a new CSV file
-    final_csv_output_path = save_data_to_csv(flattened_qa_pairs, output_csv_path)
+    final_csv_output_path = save_data_to_csv(categorized_qa_pairs, output_csv_path)
 
     # Update processed transcript IDs file with newly processed ones
-    newly_processed_ids = set(qa.transcript_id for qa in qa_pairs if qa.transcript_id not in processed_ids)
+    newly_processed_ids = set(qa.transcript_id for qa in flattened_qa_pairs if qa.transcript_id not in processed_ids)
     all_processed_ids = processed_ids.union(newly_processed_ids)
     save_processed_transcript_ids(all_processed_ids, "already_processed_transcripts.txt")
     
@@ -913,7 +1082,7 @@ if __name__ == "__main__":
     # Make sure to update the input CSV path to an existing file you want to process.
     # Output file paths will be dynamically generated if not specified.
     results = asyncio.run(clean_dataset_answers_flow(
-        input_csv_path="output_data/qa_pairs_cleaned_and_flattened_20250620_122834.csv" # !!! IMPORTANT: Change this to your actual input CSV file path !!!
+        input_csv_path="output_data/qa_pairs_cleaned_and_flattened_20250620_163533.csv" # !!! IMPORTANT: Change this to your actual input CSV file path !!!
         # output_csv_path="qa_pairs_cleaned_and_flattened_manual_name.csv", # Optional: specify output names
         # cleaning_mapping_json_path="answer_cleaning_map_manual_name.json",
         # flattening_answer_mapping_json_path="answer_flattening_map_manual_name.json"
