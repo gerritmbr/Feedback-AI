@@ -30,6 +30,7 @@ class NodeInfo:
     transcript_ids: Set[str]
     multiplicity: int
     content_category: str
+    question_ids: Set[str]
 
 
 @dataclass
@@ -49,7 +50,7 @@ class QANetworkBuilder:
         self.edges: Dict[Tuple[int, int, str], int] = {}  # (source, target, type) -> multiplicity
         self.next_node_id = 1
 
-    def _get_or_create_node_id(self, content: str, node_type: str, transcript_id: str, content_category: str) -> int:
+    def _get_or_create_node_id(self, content: str, node_type: str, transcript_id: str, content_category: str, question_id: str) -> int:
         """Get existing node ID or create new one for given content."""
         if content in self.content_to_node_id:
             node_id = self.content_to_node_id[content]
@@ -57,6 +58,8 @@ class QANetworkBuilder:
             if transcript_id not in self.node_info[node_id].transcript_ids:
                 self.node_info[node_id].transcript_ids.add(transcript_id)
                 self.node_info[node_id].multiplicity += 1
+            # Add question_id to the set
+            self.node_info[node_id].question_ids.add(question_id)
             return node_id
     
         node_id = self.next_node_id
@@ -67,7 +70,8 @@ class QANetworkBuilder:
             node_type=node_type,
             transcript_ids={transcript_id},
             multiplicity=1,
-            content_category= content_category
+            content_category=content_category,
+            question_ids={question_id}
         )
         return node_id
     
@@ -80,12 +84,15 @@ class QANetworkBuilder:
         """Build network graph from QA pairs."""
         
         # Step 1: Create nodes and basic edges (question -> answer -> reason)
-        for qa_pair in qa_pairs:
+        for i, qa_pair in enumerate(qa_pairs):
+            # Generate a unique question ID for this QA pair
+            generated_question_id = hashlib.md5(f"{qa_pair.question}_{qa_pair.transcript_id}_{i}".encode()).hexdigest()[:8]
+            
             question_id = self._get_or_create_node_id(
-                qa_pair.question, "question", qa_pair.transcript_id, qa_pair.content_category
+                qa_pair.question, "question", qa_pair.transcript_id, qa_pair.content_category, generated_question_id
             )
             answer_id = self._get_or_create_node_id(
-                qa_pair.answer, "answer", qa_pair.transcript_id, qa_pair.content_category
+                qa_pair.answer, "answer", qa_pair.transcript_id, qa_pair.content_category, generated_question_id
             )
 
             self._add_edge(question_id, answer_id, "question_to_answer")
@@ -94,7 +101,7 @@ class QANetworkBuilder:
             if qa_pair.reason and qa_pair.reason.lower() != "n/a":
 
                 reason_id = self._get_or_create_node_id(
-                    qa_pair.reason, "reason", qa_pair.transcript_id, qa_pair.content_category
+                    qa_pair.reason, "reason", qa_pair.transcript_id, qa_pair.content_category, generated_question_id
                 )
             
                 self._add_edge(answer_id, reason_id, "answer_to_reason")
@@ -139,13 +146,15 @@ class QANetworkBuilder:
         for node_id, node_info in self.node_info.items():
             # For nodes appearing in multiple transcripts, join transcript IDs
             transcript_id_str = "|".join(sorted(node_info.transcript_ids))
+            question_ids_str = "|".join(sorted(node_info.question_ids))
             nodes_data.append({
                 "node_id": node_id,
                 "content": node_info.content,
                 "node_type": node_info.node_type,
                 "transcript_id": transcript_id_str,
                 "node_multiplicity": node_info.multiplicity,
-                "content_category": node_info.content_category
+                "content_category": node_info.content_category,
+                "question_ids": question_ids_str
             })
         
         qa_nodes = pd.DataFrame(nodes_data).sort_values("node_id")
@@ -328,7 +337,7 @@ def export_for_gephi_task(
     qa_nodes: pd.DataFrame, 
     qa_edges: pd.DataFrame,
     output_dir: str = "gephi_export"
-) -> Dict[str, str]:
+) -> Dict[str, str | int]:
     """Export network data as CSV files optimized for Gephi import."""
     import os
     
@@ -341,7 +350,7 @@ def export_for_gephi_task(
     gephi_nodes['Label'] = gephi_nodes['content'].str[:50] + "..."  # Truncate for readability
     
     # Reorder columns for Gephi (Id and Label should be first)
-    gephi_nodes = gephi_nodes[['Id', 'Label', 'content', 'node_type', 'transcript_id', 'node_multiplicity', 'content_category']]
+    gephi_nodes = gephi_nodes[['Id', 'Label', 'content', 'node_type', 'transcript_id', 'node_multiplicity', 'content_category', 'question_ids']]
     
     # Prepare edges for Gephi (Gephi expects 'Source' and 'Target' columns)
     gephi_edges = qa_edges.copy()
